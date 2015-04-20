@@ -155,6 +155,43 @@ struct kparam_array
 	__MODULE_PARM_TYPE(name, #type)
 
 /**
+ * module_param_config_on_off - bool parameter with run time override
+ * @name: a valid C identifier which is the parameter name.
+ * @value: the actual lvalue to alter.
+ * @perm: visibility in sysfs.
+ * @config: kernel parameter which will enable this option if this
+ * 	kernel configuration option has been enabled.
+ *
+ * This lets you define a bool module parameter which by default will be
+ * set to true if the config option has been set on your kernel's
+ * configuration, otherwise it is set to false.
+ */
+#define module_param_config_on_off(name, var, perm, config) 		\
+	static bool var = IS_ENABLED(config);				\
+	module_param_named(name, var, bool, perm);
+
+/**
+ * module_param_config_on - bool parameter with run time enablement override
+ * @name: a valid C identifier which is the parameter name.
+ * @value: the actual lvalue to alter.
+ * @perm: visibility in sysfs.
+ * @config: kernel parameter which will enable this option if this
+ * 	kernel configuration option has been enabled.
+ *
+ * This lets you define a bool module parameter which by default will be
+ * set to true if the config option has been set on your kernel's
+ * configuration, otherwise it is set to false. This particular helper
+ * will ensure that if the kernel configuration has been set you will not
+ * be able to disable this kernel parameter. You can only use this to let
+ * the an option that was disabled on your kernel configuration be enabled
+ * at run time.
+ */
+#define module_param_config_on(name, var, perm, config) 		\
+	static bool var = IS_ENABLED(config);				\
+	module_param_named(name, var, bool_enable_only, perm);
+
+
+/**
  * module_param_cb - general callback for a module/cmdline parameter
  * @name: a valid C identifier which is the parameter name.
  * @ops: the set & get operations for this parameter.
