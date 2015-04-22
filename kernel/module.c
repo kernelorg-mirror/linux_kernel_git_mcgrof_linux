@@ -105,15 +105,10 @@ static LIST_HEAD(modules);
 struct list_head *kdb_modules = &modules; /* kdb needs the list of modules */
 #endif /* CONFIG_KGDB_KDB */
 
-#ifdef CONFIG_MODULE_SIG
-#ifdef CONFIG_MODULE_SIG_FORCE
-static bool sig_enforce = true;
-#else
-static bool sig_enforce = false;
-
+static bool sig_enforce = IS_ENABLED(CONFIG_MODULE_SIG_FORCE);
+#ifndef CONFIG_MODULE_SIG_FORCE
 module_param(sig_enforce, bool_enable_only, 0644);
 #endif /* !CONFIG_MODULE_SIG_FORCE */
-#endif /* CONFIG_MODULE_SIG */
 
 /* Block module loading/unloading? */
 int modules_disabled = 0;
