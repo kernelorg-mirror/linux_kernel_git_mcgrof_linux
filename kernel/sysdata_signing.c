@@ -1,4 +1,4 @@
-/* Module signature checker
+/* System Data signature checker
  *
  * Copyright (C) 2012 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
@@ -14,10 +14,10 @@
 #include <keys/system_keyring.h>
 #include <crypto/public_key.h>
 #include <crypto/pkcs7.h>
-#include "module-internal.h"
+#include "sysdata-internal.h"
 
 /*
- * Module signature information block.
+ * System Data signature information block.
  *
  * The constituents of the signature section are, in order:
  *
@@ -26,7 +26,7 @@
  *	- Signature data
  *	- Information block
  */
-struct module_signature {
+struct sysdata_signature {
 	u8	algo;		/* Public-key crypto algorithm [0] */
 	u8	hash;		/* Digest algorithm [0] */
 	u8	id_type;	/* Key identifier type [PKEY_ID_PKCS7] */
@@ -37,10 +37,10 @@ struct module_signature {
 };
 
 /*
- * Verify a PKCS#7-based signature on a module.
+ * Verify a PKCS#7-based signature on system data.
  */
-static int mod_verify_pkcs7(const void *mod, unsigned long modlen,
-			    const void *raw_pkcs7, size_t pkcs7_len)
+static int data_verify_pkcs7(const void *data, unsigned long len,
+			     const void *raw_pkcs7, size_t pkcs7_len)
 {
 	struct pkcs7_message *pkcs7;
 	bool trusted;
@@ -51,7 +51,7 @@ static int mod_verify_pkcs7(const void *mod, unsigned long modlen,
 		return PTR_ERR(pkcs7);
 
 	/* The data should be detached - so we need to supply it. */
-	if (pkcs7_supply_detached_data(pkcs7, mod, modlen) < 0) {
+	if (pkcs7_supply_detached_data(pkcs7, data, len) < 0) {
 		pr_err("PKCS#7 signature with non-detached data\n");
 		ret = -EBADMSG;
 		goto error;
@@ -77,42 +77,42 @@ error:
 }
 
 /*
- * Verify the signature on a module.
+ * Verify the signature on system data.
  */
-int mod_verify_sig(const void *mod, unsigned long *_modlen)
+int sysdata_verify_sig(const void *data, unsigned long *_len)
 {
-	struct module_signature ms;
-	size_t modlen = *_modlen, sig_len;
+	struct sysdata_signature ds;
+	size_t len = *_len, sig_len;
 
-	pr_devel("==>%s(,%zu)\n", __func__, modlen);
+	pr_devel("==>%s(,%zu)\n", __func__, len);
 
-	if (modlen <= sizeof(ms))
+	if (len <= sizeof(ds))
 		return -EBADMSG;
 
-	memcpy(&ms, mod + (modlen - sizeof(ms)), sizeof(ms));
-	modlen -= sizeof(ms);
+	memcpy(&ds, data + (len - sizeof(ds)), sizeof(ds));
+	len -= sizeof(ds);
 
-	sig_len = be32_to_cpu(ms.sig_len);
-	if (sig_len >= modlen)
+	sig_len = be32_to_cpu(ds.sig_len);
+	if (sig_len >= len)
 		return -EBADMSG;
-	modlen -= sig_len;
-	*_modlen = modlen;
+	len -= sig_len;
+	*_len = len;
 
-	if (ms.id_type != PKEY_ID_PKCS7) {
+	if (ds.id_type != PKEY_ID_PKCS7) {
 		pr_err("Module is not signed with expected PKCS#7 message\n");
 		return -ENOPKG;
 	}
 
-	if (ms.algo != 0 ||
-	    ms.hash != 0 ||
-	    ms.signer_len != 0 ||
-	    ms.key_id_len != 0 ||
-	    ms.__pad[0] != 0 ||
-	    ms.__pad[1] != 0 ||
-	    ms.__pad[2] != 0) {
+	if (ds.algo != 0 ||
+	    ds.hash != 0 ||
+	    ds.signer_len != 0 ||
+	    ds.key_id_len != 0 ||
+	    ds.__pad[0] != 0 ||
+	    ds.__pad[1] != 0 ||
+	    ds.__pad[2] != 0) {
 		pr_err("PKCS#7 signature info has unexpected non-zero params\n");
 		return -EBADMSG;
 	}
 
-	return mod_verify_pkcs7(mod, modlen, mod + modlen, sig_len);
+	return data_verify_pkcs7(data, len, data + len, sig_len);
 }

@@ -1,4 +1,4 @@
-/* Module internals
+/* System Data internals
  *
  * Copyright (C) 2012 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
@@ -9,4 +9,4 @@
  * 2 of the Licence, or (at your option) any later version.
  */
 
-extern int mod_verify_sig(const void *mod, unsigned long *_modlen);
+extern int sysdata_verify_sig(const void *data, unsigned long *_len);

@@ -1793,6 +1793,19 @@ config BASE_SMALL
 	default 0 if BASE_FULL
 	default 1 if !BASE_FULL
 
+config SYSDATA_SIG
+	def_bool n
+	select SYSTEM_TRUSTED_KEYRING
+	select KEYS
+	select CRYPTO
+	select ASYMMETRIC_KEY_TYPE
+	select ASYMMETRIC_PUBLIC_KEY_SUBTYPE
+	select PUBLIC_KEY_ALGO_RSA
+	select ASN1
+	select OID_REGISTRY
+	select X509_CERTIFICATE_PARSER
+	select PKCS7_MESSAGE_PARSER
+
 menuconfig MODULES
 	bool "Enable loadable module support"
 	option modules
@@ -1866,16 +1879,7 @@ config MODULE_SRCVERSION_ALL
 config MODULE_SIG
 	bool "Module signature verification"
 	depends on MODULES
-	select SYSTEM_TRUSTED_KEYRING
-	select KEYS
-	select CRYPTO
-	select ASYMMETRIC_KEY_TYPE
-	select ASYMMETRIC_PUBLIC_KEY_SUBTYPE
-	select PUBLIC_KEY_ALGO_RSA
-	select ASN1
-	select OID_REGISTRY
-	select X509_CERTIFICATE_PARSER
-	select PKCS7_MESSAGE_PARSER
+	select SYSDATA_SIG
 	help
 	  Check modules for valid signatures upon load: the signature
 	  is simply appended to the module. For more information see
