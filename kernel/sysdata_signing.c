@@ -11,10 +11,10 @@
 
 #include <linux/kernel.h>
 #include <linux/err.h>
+#include <linux/sysdata.h>
 #include <keys/system_keyring.h>
 #include <crypto/public_key.h>
 #include <crypto/pkcs7.h>
-#include "sysdata-internal.h"
 
 /*
  * System Data signature information block.
@@ -117,3 +117,4 @@ int sysdata_verify_sig(const void *data, unsigned long *_len)
 
 	return data_verify_pkcs7(data, len, data + len, sig_len);
 }
+EXPORT_SYMBOL_GPL(sysdata_verify_sig);

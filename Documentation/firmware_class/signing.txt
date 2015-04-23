@@ -1,0 +1,88 @@
+			================================
+			KERNEL FIRMWARE SIGNING FACILITY
+			================================
+
+CONTENTS
+
+ - Overview.
+ - Configuring firmware signing.
+ - Using signing keys.
+ - Signing firmware files.
+
+
+========
+OVERVIEW
+========
+
+Device drivers which require a firmware to be uploaded onto a device as its own
+device's microcode use any of the following APIs:
+
+  * request_firmware()
+  * request_firmware_direct()
+  * request_firmware_nowait()
+
+The kernel firmware signing facility enables to cryptographically sign
+firmware files on a system using the same keys used for module signing.
+Firmware files's signatures consist of PKCS#7 messages of the respective
+firmware file. A firmware file named foo.bin, would have its respective
+signature on the filesystem as foo.bin.pkcs7. When firmware signature
+checking is enabled (FIRMWARE_SIG) when one of the above APIs is used
+against foo.bin, the file foo.bin.pkcs7 will also be looked for. If
+FIRMWARE_SIG_FORCE is enabled the foo.bin file will only be allowed to
+be returned to callers of the above APIs if and only if the foo.bin.pkcs7
+file is confirmed to be a valid signature of the foo.bin file. If
+FIRMWARE_SIG_FORCE is not enabled and only FIRMWARE_SIG is enabled the
+kernel will be permissive and enabled unsiged firmware files, or firmware
+files with incorrect signatures. If FIRMWARE_SIG is not enabled the
+signature file is ignored completely.
+
+Firmware signing increases security by making it harder to load a malicious
+firmware into the kernel.  The firmware signature checking is done by the
+kernel so that it is not necessary to have trusted userspace bits.
+
+============================
+CONFIGURING FIRMWARE SIGNING
+============================
+
+The firmware signing facility is enabled by going to the section:
+
+-> Device Drivers
+  -> Generic Driver Options
+    -> Userspace firmware loading support (FW_LOADER [=y])
+      -> Firmware signature verification (FIRMWARE_SIG [=y])
+
+If you want to not allow unsigned firmware to be loaded you should
+enable:
+
+"Require all firmware to be validly signed", under the same menu.
+
+==================
+USING SIGNING KEYS
+==================
+
+For details on the types of keys used, allowed, and how to generate them
+refer to Documentation/module-signing.txt. We end up with two keys:
+
+	signing_key.priv
+	signing_key.x509
+
+======================
+SIGNING FIRMWARE FILES
+======================
+
+To sign a firmware, use the scripts/sign-file tool available in
+the Linux kernel source tree.  The script requires 4 arguments:
+
+	1.  The hash algorithm (e.g., sha256)
+	2.  The private key filename
+	3.  The public key filename
+	4.  The firmware file to be signed
+
+We want to sign the firmware file as a new detached file, for that be
+sure to use the -s flag. The following is an example of how to sign a
+kernel firmware file:
+
+	scripts/sign-file -s sha512 kernel-signkey.priv \
+		kernel-signkey.x509 /lib/firmware/foo.bin
+
+That should have created for you a /lib/firmware/foo.bin.pkcs7 file.

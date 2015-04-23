@@ -59,8 +59,8 @@
 #include <linux/jump_label.h>
 #include <linux/pfn.h>
 #include <linux/bsearch.h>
+#include <linux/sysdata.h>
 #include <uapi/linux/module.h>
-#include "sysdata-internal.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/module.h>

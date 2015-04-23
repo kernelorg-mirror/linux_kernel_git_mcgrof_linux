@@ -14,9 +14,9 @@
 #include <linux/sched.h>
 #include <linux/cred.h>
 #include <linux/err.h>
+#include <linux/sysdata.h>
 #include <keys/asymmetric-type.h>
 #include <keys/system_keyring.h>
-#include "sysdata-internal.h"
 
 struct key *system_trusted_keyring;
 EXPORT_SYMBOL_GPL(system_trusted_keyring);
