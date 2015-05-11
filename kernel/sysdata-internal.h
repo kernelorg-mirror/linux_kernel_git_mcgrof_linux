@@ -10,3 +10,5 @@
  */
 
 extern int sysdata_verify_sig(const void *data, unsigned long *_len);
+int data_verify_pkcs7(const void *data, unsigned long len,
+		      const void *raw_pkcs7, size_t pkcs7_len);

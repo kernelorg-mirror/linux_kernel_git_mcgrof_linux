@@ -39,8 +39,8 @@ struct sysdata_signature {
 /*
  * Verify a PKCS#7-based signature on system data.
  */
-static int data_verify_pkcs7(const void *data, unsigned long len,
-			     const void *raw_pkcs7, size_t pkcs7_len)
+int data_verify_pkcs7(const void *data, unsigned long len,
+		      const void *raw_pkcs7, size_t pkcs7_len)
 {
 	struct pkcs7_message *pkcs7;
 	bool trusted;
@@ -75,6 +75,7 @@ error:
 	pr_devel("<==%s() = %d\n", __func__, ret);
 	return ret;
 }
+EXPORT_SYMBOL_GPL(data_verify_pkcs7);
 
 /*
  * Verify the signature on system data.
