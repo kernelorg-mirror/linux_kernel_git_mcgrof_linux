@@ -1,0 +1,89 @@
+System data requests API
+========================
+
+As the kernel evolves we keep extending the firmware_class set of APIs
+with more or less arguments, this creates a slew of collateral evolutions.
+The set of users of firmware request APIs has also grown now to include
+users which are not looking for "firmware" per se, but instead general
+system data files which for one reason or another has been decided to be
+kept oustide of the kernel, and/or to allow dynamic updates. The system data
+request set of APIs addresses rebranding of firmware as generic system data
+files, and provides a way to enable these APIs to easily be extended without
+much collateral evolutions.
+
+System data modes of operation
+==============================
+
+There are only two types of modes of operation for system data requests:
+
+  * synchronous  - sysdata_file_request()
+  * asynchronous - sysdata_file_request_async()
+
+Synchronous requests expect requests to be done immediately, asynchronous
+requests enable requests to be scheduled for a later time.
+
+System data file descriptor
+===========================
+
+Variations of types of system data requests are specified by a system  data
+request descriptor. The system data request descriptor can grow as with new
+fields as requirements grow. The old firmware API provides two synchronous
+requests: request_firmware() and request_firmware_direct(), the later allowing
+the caller to specify that the "system data file" is optional. The system data
+request API allows a caller to set the optional nature of the system data file
+on the system data file descriptor using the same synchronous API. Since this
+requirement is part of the descriptor it also allows asynchronous requests
+to specify that the system data file is optional.
+
+Reference counting and releasing the system data file
+=====================================================
+
+As with the old firmware API both the device and module are bumped with
+reference counts during the system data requests. This prevents removal
+of the device and module making the system data request call until the
+system data request callbacks have completed, either synchronously or
+asynchronously.
+
+The old firmware APIs refcounted the firmware_class module for synchronous
+requests, meanwhile asynchronous requests refcounted the caller's module.
+The system data request API currently mimic this behaviour, for synchronous
+requests the firmware_class module is refcounted through the use of
+dfl_sync_reqs, although if in the future we may later enable use of
+also refcounting the caller's module as well. Likewise in the future we
+may extend asynchronous calls to refcount the firmware_class module.
+
+Typical use of the old synchronous firmware APIs consist of the caller
+requesting for "system data", consuming it after a request and finally
+freeing it. Typical asynchronous use of the old firmware APIs consist of
+the caller requesting for "system data" and then finally freeing it on
+asynchronous callback.
+
+The system data request API enables callers to provide a callback for both
+synchronous and asynchronous requests and since consumption can be expected
+in these callbacks it frees it for you by default after callback handlers
+are issued. If you wish to keep the system data around after your callbacks
+you must specify this through the system data request descriptor.
+
+Async cookies, replacing completions
+====================================
+
+With this new API you do not need to declare and use your own completions, you
+can replace your completions with sysdata_synchronize_request() using the
+async_cookie set for you by sysdata_file_request_async(). When
+sysdata_file_request_async() completes you can rest assured all the work for
+both triggering, and processing the sysdata using any of your callbacks has
+completed.
+
+User mode helper
+================
+
+The old firmware API provided support for an optional user mode helper. The
+new system data request API abandons all notions of the usermode helper.
+
+Tracking development enhancements and ideas
+===========================================
+
+To help track ongoing development for firmware_class and related items to
+firmware_class refer to the kernel newbies wiki page [0].
+
+[0] http://kernelnewbies.org/KernelProjects/firmware-class-enhancements
