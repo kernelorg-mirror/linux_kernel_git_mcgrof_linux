@@ -1088,6 +1088,25 @@ When kbuild executes, the following steps are followed (roughly):
 	In this example, extra-y is used to list object files that
 	shall be built, but shall not be linked as part of built-in.o.
 
+    table-y table-m and table-
+
+	To avoid code bit-rot you may wish to avoid using #ifdefs on your
+	code. Bit-rot is possible if certain features may not be enabled
+	on certain build environments. The table-y, table-m specifies
+	targets which you always wish to force compilation on, but wish
+	to only enable linking in if the feature is enabled, these are
+	features taking advantage of Linux's linker tables. For details
+	on how to implement a feature using linker tablesrefer to
+	include/linux/tables.h.
+
+	Example:
+		table-$(CONFIG-FEATURE_FOO) += foo.o
+
+	An alternative to using table-y, table-m is to use extra-y followed
+	by the respective obj-y, obj-m:
+
+		extra-y += foo.o
+		obj-$(CONFIG-FEATURE_FOO) += foo.o
 
 --- 6.7 Commands useful for building a boot image
 
