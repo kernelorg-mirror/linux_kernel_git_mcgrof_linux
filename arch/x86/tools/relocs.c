@@ -1,4 +1,5 @@
 /* This is included from relocs_32/64.c */
+#include <linux/sections.h>
 
 #define ElfW(type)		_ElfW(ELF_BITS, type)
 #define _ElfW(bits, type)	__ElfW(bits, type)
@@ -68,6 +69,8 @@ static const char * const sym_regex_kernel[S_NSYMTYPES] = {
 	"__end_rodata|"
 	"__initramfs_start|"
 	"(jiffies|jiffies_64)|"
+	SECTION_TBL_ALL_STR(SECTION_RODATA) "|"
+	SECTION_TBL_ALL_STR(SECTION_INIT) "|"
 #if ELF_BITS == 64
 	"__per_cpu_load|"
 	"init_per_cpu__.*|"

@@ -203,6 +203,8 @@
 #define SECTION_TBL(section, name, level)                         	\
 	__SECTION_TBL(section, name, level)
 
+#endif /* __ASSEMBLY__ */
+
 /*
  * For use on linker scripts and helpers
  */
@@ -218,7 +220,5 @@
  */
 #define SECTION_TBL_ALL(section)					\
 	___SECTION_TBL(section,*)
-
-#endif /* __ASSEMBLY__ */
 
 #endif /* _LINUX_SECTIONS_H */

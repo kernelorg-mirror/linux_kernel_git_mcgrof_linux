@@ -12,6 +12,16 @@ export KBUILD_SUBDIR_CCFLAGS := $(KBUILD_SUBDIR_CCFLAGS) $(subdir-ccflags-y)
 # Figure out what we need to build from the various variables
 # ===========================================================================
 
+# Linker tables objects always wish to be built to avoid bit-rot in
+# code, but only linked in *iff* they were enabled. We accomplish this
+# using pegging linker table objects into extra-y, which forces
+# compilation and then using the respective table-y and table-m as
+# as hints for things we do want enabled. Objects which we want to
+# avoid linking in will be in table-, not table-y and table-m.
+extra-y += $(table-)
+obj-m += $(table-m)
+obj-y += $(table-y)
+
 # When an object is listed to be built compiled-in and modular,
 # only build the compiled-in version
 
@@ -72,6 +82,8 @@ real-objs-m := $(foreach m, $(obj-m), $(if $(strip $($(m:.o=-objs)) $($(m:.o=-y)
 # Add subdir path
 
 extra-y		:= $(addprefix $(obj)/,$(extra-y))
+table-y		:= $(addprefix $(obj)/,$(table-y))
+table-m		:= $(addprefix $(obj)/,$(table-m))
 always		:= $(addprefix $(obj)/,$(always))
 targets		:= $(addprefix $(obj)/,$(targets))
 modorder	:= $(addprefix $(obj)/,$(modorder))
