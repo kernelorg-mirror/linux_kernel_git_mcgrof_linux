@@ -19,6 +19,7 @@
 #include <asm/bios_ebda.h>
 #include <asm/tlbflush.h>
 #include <asm/bootparam_utils.h>
+#include <asm/x86_init.h>
 
 static void __init i386_default_early_setup(void)
 {
@@ -46,6 +47,9 @@ asmlinkage __visible void __init i386_start_kernel(void)
 		i386_default_early_setup();
 		break;
 	}
+
+	x86_init_fn_init_tables();
+	x86_init_fn_early_init();
 
 	start_kernel();
 }
