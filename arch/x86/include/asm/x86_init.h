@@ -2,6 +2,7 @@
 #define _ASM_X86_PLATFORM_H
 
 #include <asm/bootparam.h>
+#include <asm/x86_init_fn.h>
 
 struct mpc_bus;
 struct mpc_cpu;

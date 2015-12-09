@@ -23,6 +23,8 @@ KASAN_SANITIZE_dumpstack_$(BITS).o := n
 CFLAGS_irq.o := -I$(src)/../include/asm/trace
 
 obj-y			:= process_$(BITS).o signal.o
+obj-y			+= init.o sort-init.o
+obj-$(CONFIG_X86_DEBUG_LINKER_TABLES) += dbg-tables/
 obj-$(CONFIG_COMPAT)	+= signal_compat.o
 obj-y			+= traps.o irq.o irq_$(BITS).o dumpstack_$(BITS).o
 obj-y			+= time.o ioport.o dumpstack.o nmi.o

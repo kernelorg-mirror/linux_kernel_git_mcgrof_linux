@@ -400,4 +400,51 @@ config PUNIT_ATOM_DEBUG
 	  The current power state can be read from
 	  /sys/kernel/debug/punit_atom/dev_power_state
 
+config X86_DEBUG_LINKER_TABLES
+	bool "x86 linker table debug"
+	depends on DEBUG_KERNEL
+	default n
+	---help---
+	  Enabling this should enable debugging linker tables on x86
+	  with its own solution. To help debug it enables the "x86 beta"
+	  and "x86 gamma" built-in feature. Both "x86 alpha" and "x86 delta"
+	  built-in features are left disabled. You should see all tables
+	  compiled, except delta, only the beta and gamma feature will be
+	  linked in. The delta feature will only be compiled and linked in
+	  if and only if its enabled the old way.
+
+	  For more details on these linker table refer to:
+
+	  include/linux/tables.h
+
+	  If unsure, say N.
+
+config X86_DEBUG_LINKER_TABLE_ALPHA
+	bool "x86 linker table alpha"
+	default n
+	depends on X86_DEBUG_LINKER_TABLES
+	---help---
+	  Enabling this should enable the linker table "x86 alpha" feature.
+
+config X86_DEBUG_LINKER_TABLE_BETA
+	bool "x86 linker table beta"
+	default y
+	depends on X86_DEBUG_LINKER_TABLES
+	---help---
+	  Enabling this should enable the linker table "x86 beta" feature.
+
+config X86_DEBUG_LINKER_TABLE_GAMMA
+	bool "x86 linker table gamma"
+	default y
+	depends on X86_DEBUG_LINKER_TABLES
+	---help---
+	  Enabling this should enable the linker table "x86 gamma" feature.
+
+config X86_DEBUG_LINKER_TABLE_DELTA
+	bool "x86 linker table delta"
+	default n
+	depends on X86_DEBUG_LINKER_TABLES
+	---help---
+	  Enabling this should enable the linker table "x86 delta" feature.
+
 endmenu

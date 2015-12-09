@@ -265,6 +265,31 @@ SECTIONS
 		__apicdrivers_end = .;
 	}
 
+	/*
+	 * x86 linker tables: this will sort all order levels
+	 * lexicographically. Something like SORT_BY_INIT_PRIORITY()
+	 * which sorts specifically on numeric order is desirable but
+	 * that would impose a change on binutils to generalize
+	 * SORT_BY_INIT_PRIORITY() for any section, SORT_BY_INIT_PRIORITY()
+	 * is specific to the init sections, and that would also mean having
+	 * a bump on requirments for building Linux. Using SORT() should
+	 * suffice, * its what gpxe uses. For things in the same order
+	 * level we rely on order in the C file, and also order on the
+	 * Makefile. Since this solution also embraces the IOMMU init solution
+	 * it has further sorting semantics implemented in C and its semantics
+	 * are defined in x86_init_fn.h and implemented in sort-init.c.
+	 */
+	.tbl            : {
+		__tbl_x86_start_init_fns = .;
+		*(SORT(.tbl.x86_init_fns.*))
+		__tbl_x86_end_init_fns = .;
+
+		/* ... etc ... */
+
+		/* You would add other tables here as needed */
+	}
+  . = ALIGN(8);
+
 	. = ALIGN(8);
 	/*
 	 * .exit.text is discard at runtime, not link time, to deal with
