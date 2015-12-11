@@ -21,12 +21,15 @@
 #include <asm/bootparam_utils.h>
 #include <asm/x86_init.h>
 
-static void __init i386_default_early_setup(void)
+static void __init i386_set_setup_funcs(void)
 {
 	/* Initialize 32bit specific setup functions */
 	x86_init.resources.reserve_resources = i386_reserve_resources;
 	x86_init.mpparse.setup_ioapic_ids = setup_ioapic_ids_from_mpc;
 }
+x86_init_early(BIT(X86_SUBARCH_PC) |
+	       BIT(X86_SUBARCH_LGUEST),
+	       NULL, NULL, i386_set_setup_funcs);
 
 asmlinkage __visible void __init i386_start_kernel(void)
 {
@@ -40,9 +43,6 @@ asmlinkage __visible void __init i386_start_kernel(void)
 		break;
 	case X86_SUBARCH_CE4100:
 		x86_ce4100_early_setup();
-		break;
-	default:
-		i386_default_early_setup();
 		break;
 	}
 
