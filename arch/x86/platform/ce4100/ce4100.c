@@ -24,6 +24,7 @@
 #include <asm/io.h>
 #include <asm/io_apic.h>
 #include <asm/emergency-restart.h>
+#include <asm/x86_init.h>
 
 static int ce4100_i8042_detect(void)
 {
@@ -144,7 +145,7 @@ static void sdv_pci_init(void)
  * CE4100 specific x86_init function overrides and early setup
  * calls.
  */
-void __init x86_ce4100_early_setup(void)
+static void __init x86_ce4100_early_setup(void)
 {
 	x86_init.oem.arch_setup = sdv_arch_setup;
 	x86_platform.i8042_detect = ce4100_i8042_detect;
@@ -166,3 +167,4 @@ void __init x86_ce4100_early_setup(void)
 
 	pm_power_off = ce4100_power_off;
 }
+x86_init_early(BIT(X86_SUBARCH_CE4100), NULL, NULL, x86_ce4100_early_setup);
