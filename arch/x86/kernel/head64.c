@@ -186,13 +186,5 @@ void __init x86_64_start_reservations(char *real_mode_data)
 	x86_init_fn_init_tables();
 	x86_init_fn_early_init();
 
-	switch (boot_params.hdr.hardware_subarch) {
-	case X86_SUBARCH_INTEL_MID:
-		x86_intel_mid_early_setup();
-		break;
-	default:
-		break;
-	}
-
 	start_kernel();
 }

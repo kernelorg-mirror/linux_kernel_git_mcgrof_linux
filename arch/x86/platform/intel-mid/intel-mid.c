@@ -167,7 +167,7 @@ static unsigned char intel_mid_get_nmi_reason(void)
  * Moorestown specific x86_init function overrides and early setup
  * calls.
  */
-void __init x86_intel_mid_early_setup(void)
+static void __init x86_intel_mid_early_setup(void)
 {
 	x86_init.resources.probe_roms = x86_init_noop;
 	x86_init.resources.reserve_resources = x86_init_noop;
@@ -199,6 +199,8 @@ void __init x86_intel_mid_early_setup(void)
 	x86_init.mpparse.get_smp_config = x86_init_uint_noop;
 	set_bit(MP_BUS_ISA, mp_bus_not_pci);
 }
+x86_init_early(BIT(X86_SUBARCH_INTEL_MID), NULL, NULL,
+	       x86_intel_mid_early_setup);
 
 /*
  * if user does not want to use per CPU apb timer, just give it a lower rating
