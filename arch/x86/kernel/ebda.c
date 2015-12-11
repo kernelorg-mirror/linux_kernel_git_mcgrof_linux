@@ -4,6 +4,7 @@
 
 #include <asm/setup.h>
 #include <asm/bios_ebda.h>
+#include <asm/x86_init.h>
 
 /*
  * The BIOS places the EBDA/XBDA at the top of conventional
@@ -26,7 +27,7 @@
 #define LOWMEM_CAP		0x9f000U	/* Absolute maximum */
 #define INSANE_CUTOFF		0x20000U	/* Less than this = insane */
 
-void __init reserve_ebda_region(void)
+static void __init reserve_ebda_region(void)
 {
 	unsigned int lowmem, ebda_addr;
 
@@ -38,8 +39,6 @@ void __init reserve_ebda_region(void)
 	 * that the paravirt case can handle memory setup
 	 * correctly, without our help.
 	 */
-	if (paravirt_legacy())
-		return;
 
 	/* end of low (conventional) memory */
 	lowmem = *(unsigned short *)__va(BIOS_LOWMEM_KILOBYTES);
@@ -69,3 +68,4 @@ void __init reserve_ebda_region(void)
 	/* reserve all memory between lowmem and the 1MB mark */
 	memblock_reserve(lowmem, 0x100000 - lowmem);
 }
+x86_init_early_pc_simple(reserve_ebda_region);
