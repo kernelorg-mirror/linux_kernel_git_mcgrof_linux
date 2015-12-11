@@ -208,7 +208,6 @@ endif
 
 head-y := arch/x86/kernel/head_$(BITS).o
 head-y += arch/x86/kernel/head$(BITS).o
-head-y += arch/x86/kernel/head.o
 
 libs-y  += arch/x86/lib/
 

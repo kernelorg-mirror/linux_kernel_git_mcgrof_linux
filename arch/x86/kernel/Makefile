@@ -2,7 +2,7 @@
 # Makefile for the linux kernel.
 #
 
-extra-y                := head_$(BITS).o head$(BITS).o head.o vmlinux.lds
+extra-y                := head_$(BITS).o head$(BITS).o vmlinux.lds
 
 CPPFLAGS_vmlinux.lds += -U$(UTS_MACHINE)
 
@@ -34,6 +34,7 @@ KCOV_INSTRUMENT		:= n
 
 CFLAGS_irq.o := -I$(src)/../include/asm/trace
 
+obj-y			:= ebda.o
 obj-y			:= process_$(BITS).o signal.o
 obj-y			+= init.o sort-init.o
 obj-$(CONFIG_X86_DEBUG_LINKER_TABLES) += dbg-tables/
