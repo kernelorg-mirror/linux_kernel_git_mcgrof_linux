@@ -40,4 +40,6 @@ static inline void set_bit(int nr, void *addr)
 	asm("btsl %1,%0" : "+m" (*(u32 *)addr) : "Ir" (nr));
 }
 
+#define BIT(nr)	(1UL << (nr))
+
 #endif /* BOOT_BITOPS_H */
