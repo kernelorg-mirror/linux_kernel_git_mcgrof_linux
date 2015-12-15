@@ -75,7 +75,7 @@ void __init tboot_probe(void)
 	}
 
 	/* only a natively booted kernel should be using TXT */
-	if (paravirt_enabled()) {
+	if (paravirt_legacy()) {
 		pr_warning("non-0 tboot_addr but pv_ops is enabled\n");
 		return;
 	}

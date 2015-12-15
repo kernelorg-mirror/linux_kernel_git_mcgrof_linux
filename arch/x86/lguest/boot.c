@@ -1409,7 +1409,7 @@ __init void lguest_init(void)
 	/* We're under lguest. */
 	pv_info.name = "lguest";
 	/* Paravirt is enabled. */
-	pv_info.paravirt_enabled = 1;
+	pv_info.paravirt_legacy = true;
 	/* We're running at privilege level 1, not 0 as normal. */
 	pv_info.kernel_rpl = 1;
 	/* Everyone except Xen runs with this set. */

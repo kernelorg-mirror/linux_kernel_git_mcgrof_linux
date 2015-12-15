@@ -14,9 +14,9 @@
 #include <linux/types.h>
 #include <linux/cpumask.h>
 
-static inline int paravirt_enabled(void)
+static inline bool paravirt_legacy(void)
 {
-	return pv_info.paravirt_enabled;
+	return pv_info.paravirt_legacy;
 }
 
 static inline void load_sp0(struct tss_struct *tss,

@@ -61,6 +61,15 @@ struct paravirt_callee_save {
 };
 
 /* general info */
+
+/**
+ * struct pv_info - hypervisor information
+ *
+ * @paravirt_legacy: true if this hypervisor supports legacy
+ * 	paravirtualized guests. Examples of features that
+ * 	characterize legacy paravirtualized guests are
+ * 	things such as the need for APM, PNP BIOS.
+ */
 struct pv_info {
 	unsigned int kernel_rpl;
 	int shared_kernel_pmd;
@@ -69,7 +78,7 @@ struct pv_info {
 	u16 extra_user_64bit_cs;  /* __USER_CS if none */
 #endif
 
-	int paravirt_enabled;
+	bool paravirt_legacy;
 	const char *name;
 };
 

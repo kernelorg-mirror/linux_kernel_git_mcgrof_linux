@@ -365,7 +365,7 @@ static inline bool is_hypervisor_range(int idx)
 	 * ffff800000000000 - ffff87ffffffffff is reserved for
 	 * the hypervisor.
 	 */
-	return paravirt_enabled() &&
+	return paravirt_legacy() &&
 		(idx >= pgd_index(__PAGE_OFFSET) - 16) &&
 		(idx < pgd_index(__PAGE_OFFSET));
 }

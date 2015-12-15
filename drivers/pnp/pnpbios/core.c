@@ -521,7 +521,7 @@ static int __init pnpbios_init(void)
 	int ret;
 
 	if (pnpbios_disabled || dmi_check_system(pnpbios_dmi_table) ||
-	    paravirt_enabled()) {
+	    paravirt_legacy()) {
 		printk(KERN_INFO "PnPBIOS: Disabled\n");
 		return -ENODEV;
 	}
