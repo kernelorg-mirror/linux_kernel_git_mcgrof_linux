@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE set PUBLIC "-//OASIS//DTD DocBook XML V4.1.2//EN"
+	"http://www.oasis-open.org/docbook/xml/4.1.2/docbookx.dtd" []>
+<set>
+  <setinfo>
+    <title>Linux ELF sections</title>
+    <subtitle>
+      Explains Linux ELF sections
+    </subtitle>
+
+    <copyright>
+      <year>2016</year>
+      <holder>Luis R. Rodriguez</holder>
+    </copyright>
+
+    <authorgroup>
+      <author>
+        <firstname>Luis</firstname>
+        <surname>Rodriguez</surname>
+        <affiliation>
+          <address><email>mcgrof@kernel.org</email></address>
+        </affiliation>
+      </author>
+    </authorgroup>
+
+    <legalnotice>
+      <para>
+        This documentation is free software; you can redistribute
+        it and/or modify it under the terms of the GNU General Public
+        License version 2 as published by the Free Software Foundation.
+      </para>
+      <para>
+        This documentation is distributed in the hope that it will be
+        useful, but WITHOUT ANY WARRANTY; without even the implied
+        warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+        See the GNU General Public License for more details.
+      </para>
+      <para>
+        You should have received a copy of the GNU General Public
+        License along with this documentation; if not, write to the Free
+        Software Foundation, Inc., 59 Temple Place, Suite 330, Boston,
+        MA 02111-1307 USA
+      </para>
+      <para>
+        For more details see the file COPYING in the source
+        distribution of Linux.
+      </para>
+    </legalnotice>
+
+    <abstract>
+      <para>
+        This book documents the different custom ELF sections used on the Linux
+	kernel and defined on Linux's custom linker script.
+      </para>
+    </abstract>
+  </setinfo>
+  <book id="linux-elf-sections">
+    <bookinfo>
+      <title>Linux kernel ELF sections</title>
+
+      <abstract>
+!Pinclude/linux/sections.h Introduction
+      </abstract>
+    </bookinfo>
+
+      <chapter>
+      <title>Core Linux kernel sections</title>
+!Pinclude/linux/sections.h Core Linux kernel sections
+!Finclude/linux/sections.h SECTION_RODATA
+!Pinclude/linux/sections.h SECTION_TEXT
+!Pinclude/linux/sections.h SECTION_DATA
+      </chapter>
+
+      <chapter>
+      <title>Linux .init* sections</title>
+!Pinclude/linux/sections.h Linux init sections
+!Finclude/linux/sections.h SECTION_INIT_DATA
+!Finclude/linux/sections.h SECTION_INIT_RODATA
+!Finclude/linux/sections.h SECTION_INIT_CALL
+      </chapter>
+
+      <chapter>
+      <title>Linux .exit* sections</title>
+!Pinclude/linux/sections.h Linux exit sections
+!Finclude/linux/sections.h SECTION_EXIT
+!Finclude/linux/sections.h SECTION_EXIT_DATA
+!Finclude/linux/sections.h SECTION_EXIT_CALL
+      </chapter>
+
+      <chapter>
+      <title>Linux .ref* sections</title>
+!Pinclude/linux/sections.h Linux references to init sections
+!Finclude/linux/sections.h SECTION_REF
+!Finclude/linux/sections.h SECTION_REF_DATA
+!Finclude/linux/sections.h SECTION_REF_RODATA
+      </chapter>
+
+  </book>
+</set>
