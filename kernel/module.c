@@ -2877,7 +2877,9 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 					     &mod->num_tracepoints);
 #endif
 #ifdef HAVE_JUMP_LABEL
-	mod->jump_entries = section_objs(info, "__jump_table",
+	mod->jump_entries = section_objs(info,
+					SECTION_TBL(SECTION_DATA,
+						    __jump_table,),
 					sizeof(*mod->jump_entries),
 					&mod->num_jump_entries);
 #endif

@@ -15,7 +15,7 @@
 static __always_inline bool arch_static_branch(struct static_key *key, bool branch)
 {
 	asm_volatile_goto("0:	brcl 0,"__stringify(JUMP_LABEL_NOP_OFFSET)"\n"
-		".pushsection __jump_table, \"aw\"\n"
+		".pushsection .data.tbl.__jump_table.all, \"aw\"\n"
 		".balign 8\n"
 		".quad 0b, %l[label], %0\n"
 		".popsection\n"
@@ -29,7 +29,7 @@ label:
 static __always_inline bool arch_static_branch_jump(struct static_key *key, bool branch)
 {
 	asm_volatile_goto("0:	brcl 15, %l[label]\n"
-		".pushsection __jump_table, \"aw\"\n"
+		".pushsection .data.tbl.__jump_table.all, \"aw\"\n"
 		".balign 8\n"
 		".quad 0b, %l[label], %0\n"
 		".popsection\n"
