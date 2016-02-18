@@ -2909,7 +2909,7 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 	if (section_addr(info, "__obsparm"))
 		pr_warn("%s: Ignoring obsolete parameters\n", mod->name);
 
-	info->debug = section_objs(info, "__verbose",
+	info->debug = section_objs(info, SECTION_TBL(SECTION_DATA, __verbose,),
 				   sizeof(*info->debug), &info->num_debug);
 
 	return 0;
