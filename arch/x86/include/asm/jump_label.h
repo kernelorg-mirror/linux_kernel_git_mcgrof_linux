@@ -29,12 +29,13 @@
 
 #include <linux/stringify.h>
 #include <linux/types.h>
+#include <asm-generic/sections.h>
 
 static __always_inline bool arch_static_branch(struct static_key *key, bool branch)
 {
 	asm_volatile_goto("1:"
 		".byte " __stringify(STATIC_KEY_INIT_NOP) "\n\t"
-		".pushsection __jump_table,  \"aw\" \n\t"
+		push_section_tbl(SECTION_DATA, __jump_table, all, aw)
 		_ASM_ALIGN "\n\t"
 		_ASM_PTR "1b, %l[l_yes], %c0 + %c1 \n\t"
 		".popsection \n\t"
@@ -50,7 +51,7 @@ static __always_inline bool arch_static_branch_jump(struct static_key *key, bool
 	asm_volatile_goto("1:"
 		".byte 0xe9\n\t .long %l[l_yes] - 2f\n\t"
 		"2:\n\t"
-		".pushsection __jump_table,  \"aw\" \n\t"
+		push_section_tbl(SECTION_DATA, __jump_table, all, aw)
 		_ASM_ALIGN "\n\t"
 		_ASM_PTR "1b, %l[l_yes], %c0 + %c1 \n\t"
 		".popsection \n\t"
@@ -85,7 +86,7 @@ struct jump_entry {
 	.else
 	.byte		STATIC_KEY_INIT_NOP
 	.endif
-	.pushsection __jump_table, "aw"
+	.pushsection .data.tbl.__jump_table.all, "aw"
 	_ASM_ALIGN
 	_ASM_PTR	.Lstatic_jump_\@, \target, \key
 	.popsection
@@ -101,7 +102,7 @@ struct jump_entry {
 	.long		\target - .Lstatic_jump_after_\@
 .Lstatic_jump_after_\@:
 	.endif
-	.pushsection __jump_table, "aw"
+	.pushsection .data.tbl.__jump_table.all, "aw"
 	_ASM_ALIGN
 	_ASM_PTR	.Lstatic_jump_\@, \target, \key + 1
 	.popsection

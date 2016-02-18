@@ -29,7 +29,7 @@
 static __always_inline bool arch_static_branch(struct static_key *key, bool branch)
 {
 	asm goto("1: nop\n\t"
-		 ".pushsection __jump_table,  \"aw\"\n\t"
+		 push_section_tbl(SECTION_DATA, __jump_table, all, aw)
 		 ".align 3\n\t"
 		 ".quad 1b, %l[l_yes], %c0\n\t"
 		 ".popsection\n\t"
@@ -43,7 +43,7 @@ l_yes:
 static __always_inline bool arch_static_branch_jump(struct static_key *key, bool branch)
 {
 	asm goto("1: b %l[l_yes]\n\t"
-		 ".pushsection __jump_table,  \"aw\"\n\t"
+		 push_section_tbl(SECTION_DATA, __jump_table, all, aw)
 		 ".align 3\n\t"
 		 ".quad 1b, %l[l_yes], %c0\n\t"
 		 ".popsection\n\t"

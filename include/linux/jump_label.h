@@ -1,6 +1,8 @@
 #ifndef _LINUX_JUMP_LABEL_H
 #define _LINUX_JUMP_LABEL_H
 
+#include <linux/tables.h>
+
 /*
  * Jump label support
  *
@@ -138,8 +140,7 @@ static __always_inline bool static_key_true(struct static_key *key)
 	return !arch_static_branch(key, true);
 }
 
-extern struct jump_entry __start___jump_table[];
-extern struct jump_entry __stop___jump_table[];
+DECLARE_LINKTABLE_DATA(struct jump_entry, __jump_table);
 
 extern void jump_label_init(void);
 extern void jump_label_lock(void);
