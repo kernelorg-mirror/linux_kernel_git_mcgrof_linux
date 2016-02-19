@@ -66,6 +66,7 @@
 #include <asm/page.h>
 #include <asm/desc.h>
 #include <asm/byteorder.h>
+#include <asm/setup.h>
 
 #include "../base.h"
 #include "pnpbios.h"
@@ -521,7 +522,8 @@ static int __init pnpbios_init(void)
 	int ret;
 
 	if (pnpbios_disabled || dmi_check_system(pnpbios_dmi_table) ||
-	    paravirt_enabled()) {
+	    boot_params.hdr.hardware_subarch == X86_SUBARCH_LGUEST ||
+	    boot_params.hdr.hardware_subarch == X86_SUBARCH_XEN) {
 		printk(KERN_INFO "PnPBIOS: Disabled\n");
 		return -ENODEV;
 	}
