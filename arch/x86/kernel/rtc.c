@@ -14,6 +14,7 @@
 #include <asm/time.h>
 #include <asm/intel-mid.h>
 #include <asm/rtc.h>
+#include <asm/setup.h>
 
 #ifdef CONFIG_X86_32
 /*
@@ -200,7 +201,7 @@ static __init int add_rtc_cmos(void)
 	}
 #endif
 
-	if (paravirt_enabled() && !paravirt_has(RTC))
+	if (boot_params.hdr.hardware_subarch == X86_SUBARCH_LGUEST)
 		return -ENODEV;
 
 	platform_device_register(&rtc_device);
