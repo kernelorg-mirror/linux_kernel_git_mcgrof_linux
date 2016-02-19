@@ -162,7 +162,7 @@ _PIF_WORK	= (_PIF_PER_TRAP)
 		tm	off+\addr, \mask
 	.endm
 
-	.section .kprobes.text, "ax"
+	.section .text.tbl.kprobes.all, "ax"
 
 /*
  * Scheduler resume function, called by switch_to
@@ -966,7 +966,7 @@ ENTRY(restart_int_handler)
 	brc	2,2b
 3:	j	3b
 
-	.section .kprobes.text, "ax"
+	.section .text.tbl.kprobes.all, "ax"
 
 #ifdef CONFIG_CHECK_STACK
 /*

@@ -218,7 +218,7 @@ name: \
 	.localentry name,.-name
 
 #define _KPROBE(name) \
-	.section ".kprobes.text","a"; \
+	.section ".text.tbl.kprobes.all","a"; \
 	.align 2 ; \
 	.type name,@function; \
 	.globl name; \
@@ -248,7 +248,7 @@ GLUE(.,name):
 #define _GLOBAL_TOC(name) _GLOBAL(name)
 
 #define _KPROBE(name) \
-	.section ".kprobes.text","a"; \
+	.section ".text.tbl.kprobes.all","a"; \
 	.align 2 ; \
 	.globl name; \
 	.globl GLUE(.,name); \
@@ -280,7 +280,7 @@ n:
 #define _GLOBAL_TOC(name) _GLOBAL(name)
 
 #define _KPROBE(n)	\
-	.section ".kprobes.text","a";	\
+	.section ".text.tbl.kprobes.all","a";	\
 	.globl	n;	\
 n:
 

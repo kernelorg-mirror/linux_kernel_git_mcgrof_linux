@@ -551,7 +551,8 @@ static __always_inline void __write_once_size(volatile void *p, void *res, int s
 
 /* Ignore/forbid kprobes attach on very low level functions marked by this attribute: */
 #ifdef CONFIG_KPROBES
-# define __kprobes	__attribute__((__section__(".kprobes.text")))
+#include <linux/sections.h>
+# define __kprobes	__attribute__((__section__(SECTION_TBL(SECTION_TEXT, kprobes, all))))
 # define nokprobe_inline	__always_inline
 #else
 # define __kprobes

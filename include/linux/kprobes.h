@@ -42,7 +42,11 @@
 #include <linux/ftrace.h>
 
 #ifdef CONFIG_KPROBES
+#include <linux/tables.h>
 #include <asm/kprobes.h>
+
+DECLARE_LINKTABLE_TEXT(char, kprobes);
+DECLARE_LINKTABLE_INIT_DATA(unsigned long, _kprobe_blacklist);
 
 /* kprobe_status settings */
 #define KPROBE_HIT_ACTIVE	0x00000001
@@ -487,8 +491,7 @@ static inline int enable_jprobe(struct jprobe *jp)
  * by using this macro.
  */
 #define __NOKPROBE_SYMBOL(fname)			\
-static unsigned long __used				\
-	__attribute__((section("_kprobe_blacklist")))	\
+static LINKTABLE_INIT_DATA(_kprobe_blacklist, all)		\
 	_kbl_addr_##fname = (unsigned long)fname;
 #define NOKPROBE_SYMBOL(fname)	__NOKPROBE_SYMBOL(fname)
 #else

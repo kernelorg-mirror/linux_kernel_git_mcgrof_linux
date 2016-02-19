@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "../../include/linux/sections.h"
 
 #ifndef EM_METAG
 /* Remove this when these make it to the standard system elf.h. */
@@ -356,7 +357,7 @@ is_mcounted_section_name(char const *const txtname)
 		strcmp(".sched.text",    txtname) == 0 ||
 		strcmp(".spinlock.text", txtname) == 0 ||
 		strcmp(".irqentry.text", txtname) == 0 ||
-		strcmp(".kprobes.text", txtname) == 0 ||
+		strcmp(SECTION_TBL(SECTION_TEXT, kprobe, all), txtname) == 0 ||
 		strcmp(".text.unlikely", txtname) == 0;
 }
 
