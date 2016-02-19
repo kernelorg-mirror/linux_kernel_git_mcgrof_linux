@@ -20,7 +20,7 @@
 	 *
 	 *	Note: "in0" and "in1" are preserved for debugging purposes.
 	 */
-	.section .kprobes.text,"ax"
+	.section .text.tbl.kprobes.all,"ax"
 GLOBAL_ENTRY(flush_icache_range)
 
 	.prologue
@@ -72,7 +72,7 @@ END(flush_icache_range)
 	 *
 	 *	Note: "in0" and "in1" are preserved for debugging purposes.
 	 */
-	.section .kprobes.text,"ax"
+	.section .text.tbl.kprobes.all,"ax"
 GLOBAL_ENTRY(clflush_cache_range)
 
 	.prologue

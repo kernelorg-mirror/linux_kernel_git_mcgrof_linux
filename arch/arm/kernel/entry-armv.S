@@ -83,7 +83,7 @@
 	.endm
 
 #ifdef CONFIG_KPROBES
-	.section	.kprobes.text,"ax",%progbits
+	.section	.text.tbl.kprobes.all,"ax",%progbits
 #else
 	.text
 #endif

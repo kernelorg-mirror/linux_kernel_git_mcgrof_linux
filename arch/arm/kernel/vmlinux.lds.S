@@ -108,7 +108,6 @@ SECTIONS
 			TEXT_TEXT
 			SCHED_TEXT
 			LOCK_TEXT
-			KPROBES_TEXT
 			*(.gnu.warning)
 			*(.glue_7)
 			*(.glue_7t)

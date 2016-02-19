@@ -49,7 +49,6 @@ SECTIONS
 		_stext = .;
 		*(.ex.text)
 		*(.irq.text)
-		KPROBES_TEXT
 		TEXT_TEXT
 		SCHED_TEXT
 		LOCK_TEXT

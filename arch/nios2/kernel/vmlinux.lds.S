@@ -39,7 +39,6 @@ SECTIONS
 		SCHED_TEXT
 		LOCK_TEXT
 		IRQENTRY_TEXT
-		KPROBES_TEXT
 	} =0
 	_etext = .;
 

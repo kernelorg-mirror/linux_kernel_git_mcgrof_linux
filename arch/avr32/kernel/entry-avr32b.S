@@ -605,7 +605,7 @@ fault_exit_work:
 	brcc	fault_resume_user
 	rjmp	enter_monitor_mode
 
-	.section .kprobes.text, "ax", @progbits
+	.section .text.tbl.kprobes.all, "ax", @progbits
 	.type	handle_debug, @function
 handle_debug:
 	sub	sp, 4		/* r12_orig */
@@ -826,7 +826,7 @@ irq_level\level:
 	IRQ_LEVEL 2
 	IRQ_LEVEL 3
 
-	.section .kprobes.text, "ax", @progbits
+	.section .text.tbl.kprobes.all, "ax", @progbits
 	.type	enter_monitor_mode, @function
 enter_monitor_mode:
 	/*

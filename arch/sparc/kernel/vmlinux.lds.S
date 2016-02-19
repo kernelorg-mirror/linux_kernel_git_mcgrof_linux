@@ -46,7 +46,6 @@ SECTIONS
 		TEXT_TEXT
 		SCHED_TEXT
 		LOCK_TEXT
-		KPROBES_TEXT
 		IRQENTRY_TEXT
 		*(.gnu.warning)
 	} = 0
