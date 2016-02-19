@@ -3,8 +3,10 @@
 
 /* References to section boundaries */
 
+#ifndef __ASSEMBLY__
 #include <linux/compiler.h>
 #include <linux/types.h>
+#include <linux/sections.h>
 
 /*
  * Usage guidelines:
@@ -127,5 +129,13 @@ static inline bool init_section_intersects(void *virt, size_t size)
 {
 	return memory_intersects(__init_begin, __init_end, virt, size);
 }
+
+/*
+ * Some architectures do not like the "\t" at the end (s39), we should be
+ * able to generalize this further, but so far this covers most architectures.
+ */
+#define push_section_tbl(section, name, level, flags)			\
+	".pushsection " SECTION_TBL(section,name,level) ",  \"" #flags "\"\n\t"
+#endif
 
 #endif /* _ASM_GENERIC_SECTIONS_H_ */
