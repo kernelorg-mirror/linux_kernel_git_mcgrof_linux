@@ -38,7 +38,7 @@ void __init reserve_ebda_region(void)
 	 * that the paravirt case can handle memory setup
 	 * correctly, without our help.
 	 */
-	if (paravirt_enabled())
+	if (boot_params.hdr.hardware_subarch != X86_SUBARCH_PC)
 		return;
 
 	/* end of low (conventional) memory */
