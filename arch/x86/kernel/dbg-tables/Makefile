@@ -16,3 +16,4 @@ table-$(CONFIG_X86_DEBUG_LINKER_TABLE_GAMMA)	+= gamma.o
 # a feature when its selected you can just use the good
 # ol' obj
 obj-$(CONFIG_X86_DEBUG_LINKER_TABLE_DELTA)	+= delta.o
+obj-y	+= hello.o
