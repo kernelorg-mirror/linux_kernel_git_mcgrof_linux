@@ -8,7 +8,7 @@
 #include <asm/boot.h>
 #include <asm/setup.h>
 
-DEFINE_LINKTABLE_INIT(struct x86_init_fn, x86_init_fns);
+DEFINE_LINKTABLE_INIT_DATA(struct x86_init_fn, x86_init_fns);
 
 static bool x86_init_fn_supports_subarch(struct x86_init_fn *fn)
 {

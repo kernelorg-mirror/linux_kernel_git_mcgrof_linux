@@ -153,7 +153,7 @@ enum x86_init_fn_flags {
 	X86_INIT_DETECTED = BIT(1),
 };
 
-DECLARE_LINKTABLE_INIT(struct x86_init_fn, x86_init_fns);
+DECLARE_LINKTABLE_INIT_DATA(struct x86_init_fn, x86_init_fns);
 
 /* Init order levels, we can start at 0000 but reserve 0000-0999 for now */
 #define X86_INIT_ORDER_EARLY	1000
@@ -171,7 +171,7 @@ DECLARE_LINKTABLE_INIT(struct x86_init_fn, x86_init_fns);
 		 __detect,						\
 		 __depend,						\
 		 __early_init)						\
-	static LINKTABLE_INIT(x86_init_fns, __level)			\
+	static LINKTABLE_INIT_DATA(x86_init_fns, __level)		\
 	__x86_init_fn_##__early_init2 = {				\
 		.order_level = __level,					\
 		.supp_hardware_subarch = __supp_hardware_subarch,	\
@@ -181,11 +181,11 @@ DECLARE_LINKTABLE_INIT(struct x86_init_fn, x86_init_fns);
 	};								\
 	LTO_REFERENCE_INITCALL(__x86_init_fn_##__early_init);
 
-#define x86_init_early(__supp_hardware_subarch,			\
+#define x86_init_early(__supp_hardware_subarch,				\
 		       __detect,					\
 		       __depend,					\
 		       __early_init)					\
-	x86_init(X86_INIT_ORDER_EARLY, __supp_hardware_subarch,	\
+	x86_init(X86_INIT_ORDER_EARLY, __supp_hardware_subarch,		\
 		 __detect, __depend,					\
 		 __early_init);
 

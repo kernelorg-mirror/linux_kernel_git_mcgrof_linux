@@ -349,7 +349,7 @@
  * read-only.
  */
 #define LINKTABLE_TEXT_WEAK(name, level)				\
-	      __typeof__(name[0])					\
+	const __typeof__(name[0])					\
 	      __attribute__((used,					\
 			     weak,					\
 			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
@@ -380,7 +380,7 @@
  * Constructs a weak linker table which will need at init for execution.
  */
 #define LINKTABLE_INIT_WEAK(name, level)					\
-	      __typeof__(name[0])					\
+	const __typeof__(name[0])					\
 	      __attribute__((used,					\
 			     weak,					\
 			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
@@ -418,7 +418,7 @@
  * Declares a linker table to be used for execution.
  */
 #define LINKTABLE_TEXT(name, level)					\
-	      __typeof__(name[0])					\
+	const __typeof__(name[0])					\
 	      __attribute__((used,					\
 			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
 			     section(SECTION_TBL(SECTION_TEXT, name, level))))
@@ -459,7 +459,7 @@
  * Declares a linker table entry which we will use during init for execution.
  */
 #define LINKTABLE_INIT(name, level)					\
-	      __typeof__(name[0])					\
+	const __typeof__(name[0])					\
 	      __attribute__((used,					\
 			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
 			     section(SECTION_TBL(SECTION_INIT, name, level))))
@@ -495,7 +495,7 @@
  * Declares a linker table entry for execution.
  */
 #define DECLARE_LINKTABLE_TEXT(type, name)				\
-	 extern type name[], name##__end[];
+	 extern const type name[], name##__end[];
 
 /**
  * DECLARE_LINKTABLE_DATA - Declares a data linker table entry
@@ -528,7 +528,7 @@
  * Declares a linker table entry to be used on init for execution.
  */
 #define DECLARE_LINKTABLE_INIT(type, name)				\
-	 extern type name[], name##__end[];
+	 extern const type name[], name##__end[];
 
 /**
  * DECLARE_LINKTABLE_INIT_DATA - Declares a data init linker table entry
