@@ -232,79 +232,6 @@
  */
 
 /**
- * DOC: Linker table helpers
- *
- * These are helpers for linker tables.
- */
-
-/**
- * LINKTABLE_ALIGNMENT - get linker table alignment
- *
- * @name: linker table
- *
- * Gives you the linker table alignment.
- */
-#define LINKTABLE_ALIGNMENT(name)	__alignof__(__typeof__(name[0]))
-
-/**
- * LINKTABLE_SIZE - get number of entries in linker table
- *
- * @name: linker table
- *
- * This gives you the number of entries in linker table.
- * Example usage:
- *
- *   unsigned int num_frobs = LINKTABLE_SIZE(frobnicator_fns);
- */
-#define LINKTABLE_SIZE(name)	((name##__end) - (name))
-
-/**
- * LINKTABLE_EMPTY - check if link table is empty
- *
- * @name: linker table
- *
- * Returns true if link table is emtpy.
- *
- *   bool is_empty = LINKTABLE_EMPTY(frobnicator_fns);
- */
-#define LINKTABLE_EMPTY(name)	(LINKTABLE_SIZE(name) == 0)
-
-/**
- * LINKTABLE_START - get address of start of linker table.
- *
- * @tbl: linker table
- *
- * This gives you the start address of the linker table.
- * This should give you the address of the first entry.
- *
- */
-#define LINKTABLE_START(tbl)	tbl
-
-/**
- * LINKTABLE_END - get address of endd of linker table.
- *
- * @tbl: linker table
- *
- * This gives you the end address of the linker table.
- * This should give you the address of the end of the
- * linker table. This will match the start address if the
- * linker table is empty.
- */
-#define LINKTABLE_END(tbl)	tbl##__end
-
-/**
- * LINKTABLE_ADDR_WITHIN - returns true if address is in range
- *
- * @tbl: linker table
- * @address: address to query for
- *
- * Returns true if the address is part of the linker table.
- */
-#define LINKTABLE_ADDR_WITHIN(tbl, addr)				\
-	 (addr >= (unsigned long) LINKTABLE_START(tbl) &&		\
-          addr < (unsigned long) LINKTABLE_END(tbl))
-
-/**
  * DOC: Constructing linker tables
  *
  * Linker tables constructors are used to build an entry into a linker table.
@@ -325,36 +252,21 @@
  */
 
 /**
- * LINKTABLE_DATA_WEAK - Constructs a weak linker table entry for data
- *
- * @name: linker table name
- * @level: order level
- *
- * Constructs a weak linker table which we data.
- */
-#define LINKTABLE_DATA_WEAK(name, level)				\
-	      __typeof__(name[0])					\
-	      __attribute__((used,					\
-			     weak,					\
-			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
-			     section(SECTION_TBL(SECTION_DATA, name, level))))
-
-/**
- * LINKTABLE_TEXT_WEAK - Constructs a weak linker table entry for execution
+ * LINKTABLE_WEAK - Constructs a weak linker table entry for execution
  *
  * @name: linker table name
  * @level: order level
  *
  * Constructs a weak linker table which we for execution. These will be
- * read-only.
+ * read-only. You can use this for data structures with read-only data
+ * along with callbacks for execution.
  */
-#define LINKTABLE_TEXT_WEAK(name, level)				\
+#define LINKTABLE_WEAK(name, level)					\
 	const __typeof__(name[0])					\
 	      __attribute__((used,					\
 			     weak,					\
 			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
 			     section(SECTION_TBL(SECTION_TEXT, name, level))))
-
 
 /**
  * LINKTABLE_RO_WEAK - Constructs a weak read-only linker table entry
@@ -362,7 +274,8 @@
  * @name: linker table name
  * @level: order level
  *
- * Constructs a weak linker table which we know only requires read-only access.
+ * Constructs a weak linker table which we know only requires only read-only
+ * access.
  */
 #define LINKTABLE_RO_WEAK(name, level)					\
 	const __typeof__(name[0])					\
@@ -370,6 +283,23 @@
 			     weak,					\
 			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
 			     section(SECTION_TBL(SECTION_RODATA, name, level))))
+
+
+/**
+ * LINKTABLE_DATA_WEAK - Constructs a weak linker table entry for data
+ *
+ * @name: linker table name
+ * @level: order level
+ *
+ * Constructs a weak linker table for data, it grants read and write access
+ * to the data.
+ */
+#define LINKTABLE_DATA_WEAK(name, level)				\
+	      __typeof__(name[0])					\
+	      __attribute__((used,					\
+			     weak,					\
+			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
+			     section(SECTION_TBL(SECTION_DATA, name, level))))
 
 /**
  * LINKTABLE_INIT_WEAK - Constructs a weak linker table entry for init code
@@ -392,7 +322,8 @@
  * @name: linker table name
  * @level: order level
  *
- * Constructs a weak linker table which will need at init for data.
+ * Constructs a weak linker table which you will need at init for data,
+ * it grants read and write access to the data.
  */
 #define LINKTABLE_INIT_DATA_WEAK(name, level)				\
 	      __typeof__(name[0])					\
@@ -410,18 +341,33 @@
  */
 
 /**
- * LINKTABLE_TEXT - Declares a linker table entry for execution
+ * LINKTABLE - Declares a linker table entry for execution
  *
  * @name: linker table name
  * @level: order level
  *
- * Declares a linker table to be used for execution.
+ * Declares a linker table to be used for execution, read only.
  */
-#define LINKTABLE_TEXT(name, level)					\
+#define LINKTABLE(name, level)						\
 	const __typeof__(name[0])					\
 	      __attribute__((used,					\
 			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
 			     section(SECTION_TBL(SECTION_TEXT, name, level))))
+
+/**
+ * LINKTABLE_RO - Declares a read-only linker table entry.
+ *
+ * @name: linker table name
+ * @level: order level
+ *
+ * Declares a linker table which we know only requires read-only access.
+ */
+#define LINKTABLE_RO(name, level)					\
+	const __typeof__(name[0])					\
+	      __attribute__((used,					\
+			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
+			     section(SECTION_TBL(SECTION_RODATA, name, level))))
+
 
 /**
  * LINKTABLE_DATA - Declares a data linker table entry
@@ -437,26 +383,13 @@
 			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
 			     section(SECTION_TBL(SECTION_DATA, name, level))))
 /**
- * LINKTABLE_RO - Declares a read-only linker table entry.
- *
- * @name: linker table name
- * @level: order level
- *
- * Declares a linker table which we know only requires read-only access.
- */
-#define LINKTABLE_RO(name, level)					\
-	const __typeof__(name[0])					\
-	      __attribute__((used,					\
-			     __aligned__(LINKTABLE_ALIGNMENT(name)),	\
-			     section(SECTION_TBL(SECTION_RODATA, name, level))))
-
-/**
  * LINKTABLE_INIT - Declares a linker table entry to be used on init.
  *
  * @name: linker table name
  * @level: order level
  *
  * Declares a linker table entry which we will use during init for execution.
+ * This is read only.
  */
 #define LINKTABLE_INIT(name, level)					\
 	const __typeof__(name[0])					\
@@ -487,15 +420,15 @@
  */
 
 /**
- * DECLARE_LINKTABLE_TEXT - Declares linker table entry for exectuion
+ * DECLARE_LINKTABLE - Declares linker table entry for exectuion
  *
  * @type: data type
  * @name: table name
  *
- * Declares a linker table entry for execution.
+ * Declares a linker table entry for execution and/or read only data.
  */
-#define DECLARE_LINKTABLE_TEXT(type, name)				\
-	 extern const type name[], name##__end[];
+#define DECLARE_LINKTABLE(type, name)					\
+	 DECLARE_SECTION_TYPE_RO(type, name)
 
 /**
  * DECLARE_LINKTABLE_DATA - Declares a data linker table entry
@@ -503,44 +436,13 @@
  * @type: data type
  * @name: table name
  *
- * Declares a data linker table entry.
+ * Declares a data linker table data entry. This linker table has read and
+ * write access. You can also use this for execution if using data structures
+ * with callbacks, however you should only use this if you really need
+ * to modify this data structure.
  */
 #define DECLARE_LINKTABLE_DATA(type, name)				\
-	 extern type name[], name##__end[];
-
-/**
- * DECLARE_LINKTABLE_RO - Declares a read-only linker table entry
- *
- * @type: data type
- * @name: table name
- *
- * Declares a read-only linker table entry.
- */
-#define DECLARE_LINKTABLE_RO(type, name)				\
-	 extern const type name[], name##__end[];
-
-/**
- * DECLARE_LINKTABLE_INIT - Declares a linker table entry to be used on init
- *
- * @type: data type
- * @name: table name
- *
- * Declares a linker table entry to be used on init for execution.
- */
-#define DECLARE_LINKTABLE_INIT(type, name)				\
-	 extern const type name[], name##__end[];
-
-/**
- * DECLARE_LINKTABLE_INIT_DATA - Declares a data init linker table entry
- *
- * @type: data type
- * @name: table name
- *
- * Declares a linker table entry to be used on init for data
- */
-#define DECLARE_LINKTABLE_INIT_DATA(type, name)				\
-	 extern type name[], name##__end[];
-
+	 DECLARE_SECTION_TYPE(type, name)
 
 /**
  * DOC: Defining Linker tables
@@ -551,18 +453,18 @@
  */
 
 /**
- * DEFINE_LINKTABLE_TEXT - Defines a linker table for execution
+ * DEFINE_LINKTABLE - Defines a linker table for execution
  *
  * @type: data type
  * @name: table name
  *
- * Defines a linker table which used for execution.
+ * Defines a linker table which used for execution or read only data.
  */
-#define DEFINE_LINKTABLE_TEXT(type, name)				\
-	DECLARE_LINKTABLE_TEXT(type, name);				\
-	LINKTABLE_TEXT_WEAK(name, ) VMLINUX_SYMBOL(name)[0] = {};	\
+#define DEFINE_LINKTABLE(type, name)					\
+	DECLARE_LINKTABLE(type, name);					\
+	LINKTABLE_WEAK(name, ) VMLINUX_SYMBOL(name)[0] = {};		\
 	LTO_REFERENCE_INITCALL(name);					\
-	LINKTABLE_TEXT(name, ~) VMLINUX_SYMBOL(name##__end)[0] = {};\
+	LINKTABLE(name, ~) VMLINUX_SYMBOL(name##__end)[0] = {};		\
 	LTO_REFERENCE_INITCALL(name##__end);
 
 /**
@@ -577,7 +479,7 @@
 	DECLARE_LINKTABLE_DATA(type, name);				\
 	LINKTABLE_DATA_WEAK(name, ) VMLINUX_SYMBOL(name)[0] = {};	\
 	LTO_REFERENCE_INITCALL(name);					\
-	LINKTABLE_DATA(name, ~) VMLINUX_SYMBOL(name##__end)[0] = {};\
+	LINKTABLE_DATA(name, ~) VMLINUX_SYMBOL(name##__end)[0] = {};	\
 	LTO_REFERENCE_INITCALL(name##__end);
 
 /**
@@ -603,12 +505,13 @@
  *
  * Defines a linker table. If you are adding a new type you should
  * enable CONFIG_DEBUG_SECTION_MISMATCH and ensure routines that make
- * use of the linker tables get a respective __ref tag.
+ * use of the linker tables get a respective __ref or __init tag. Be
+ * sure to use __init if you can free that link table entry after init.
  */
-#define DEFINE_LINKTABLE_INIT(type, name)					\
-	DECLARE_LINKTABLE_INIT(type, name);					\
-	LINKTABLE_INIT_WEAK(name, ) VMLINUX_SYMBOL(name)[0] = {};		\
-	LTO_REFERENCE_INITCALL(name);						\
+#define DEFINE_LINKTABLE_INIT(type, name)				\
+	DECLARE_LINKTABLE_INIT(type, name);				\
+	LINKTABLE_INIT_WEAK(name, ) VMLINUX_SYMBOL(name)[0] = {};	\
+	LTO_REFERENCE_INITCALL(name);					\
 	LINKTABLE_INIT(name, ~) VMLINUX_SYMBOL(name##__end)[0] = {};	\
 	LTO_REFERENCE_INITCALL(name##__end);
 
@@ -620,13 +523,14 @@
  *
  * Defines a linker table for init data. If you are adding a new type you
  * should enable CONFIG_DEBUG_SECTION_MISMATCH and ensure routines that make
- * use of the linker tables get a respective __ref tag.
+ * use of the linker tables get a respective __ref or __init tag. Use __init
+ * if you know you can free that linktable entry after init.
  */
-#define DEFINE_LINKTABLE_INIT_DATA(type, name)					\
-	DECLARE_LINKTABLE_INIT_DATA(type, name);					\
-	LINKTABLE_INIT_DATA_WEAK(name, ) VMLINUX_SYMBOL(name)[0] = {};		\
-	LTO_REFERENCE_INITCALL(name);						\
-	LINKTABLE_INIT_DATA(name, ~) VMLINUX_SYMBOL(name##__end)[0] = {};	\
+#define DEFINE_LINKTABLE_INIT_DATA(type, name)				\
+	DECLARE_LINKTABLE_INIT_DATA(type, name);			\
+	LINKTABLE_INIT_DATA_WEAK(name, ) VMLINUX_SYMBOL(name)[0] = {};	\
+	LTO_REFERENCE_INITCALL(name);					\
+	LINKTABLE_INIT_DATA(name, ~) VMLINUX_SYMBOL(name##__end)[0] = {};\
 	LTO_REFERENCE_INITCALL(name##__end);
 
 /**

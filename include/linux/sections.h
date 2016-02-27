@@ -182,6 +182,134 @@
 
 #ifndef __ASSEMBLY__
 
+/**
+ * DOC: Section helpers
+ *
+ * These are helpers for section areas.
+ */
+
+/**
+ * SECTION_ALIGNMENT - get section area alignment
+ *
+ * @name: section area name
+ *
+ * Gives you alignment for the the section area.
+ */
+#define SECTION_RANGE_ALIGNMENT(name)	__alignof__(__typeof__(name[0]))
+
+/**
+ * SECTION_SIZE - get number of entries in section area
+ *
+ * @name: section area name
+ *
+ * This gives you the number of entries in the section area.
+ * Example usage:
+ *
+ *   unsigned int num_entries = SECTION_SIZE(section_name);
+ */
+#define SECTION_RANGE_SIZE(name)	((name##__end) - (name))
+
+/**
+ * SECTION_EMPTY - check if section area is empty
+ *
+ * @name: section area name
+ *
+ * Returns true if there are no entires in the section area.
+ *
+ *   bool is_empty = SECTION_EMPTY(section_name);
+ */
+#define SECTION_RANGE_EMPTY(name)	(SECTION_RANGE_SIZE(name) == 0)
+
+/**
+ * SECTION_START - get address of start of the section area
+ *
+ * @name: section area name
+ *
+ * This gives you the start address of the section area.
+ * This should give you the address of the first entry in the
+ * section area as well.
+ *
+ */
+#define SECTION_RANGE_START(name)	name
+
+/**
+ * SECTION_END - get address of end of the section area
+ *
+ * @name: section area name
+ *
+ * This gives you the end address of the section area.
+ * This will match the start address if the section area
+ * is empty.
+ */
+#define SECTION_RANGE_END(name)	name##__end
+
+/**
+ * SECTION_ADDR_IN_RANGE - returns true if address is in section range
+ *
+ * @name: section range name
+ * @address: address to query for in sectoin range
+ *
+ * Returns true if the address is within the section range.
+ */
+#define SECTION_ADDR_IN_RANGE(name, addr)				\
+	 (addr >= (unsigned long) SECTION_RANGE_START(name) &&		\
+          addr < (unsigned long) SECTION_RANGE_END(name))
+
+#define SECTION_RANGE(name, section)					\
+	#section "." #name
+
+/**
+ * DOC: Declaring section areas
+ *
+ * Declarers are used to help code access the section areas. Typically
+ * header files for subsystems would declare the section areas to enable
+ * easy access to add new entries, and to iterate over the list of table.
+ */
+
+/**
+ * DECLARE_SECTION_TYPE - Declares section range of specific type
+ *
+ * @name: section range name
+ * @type: data type
+ *
+ * Declares a section range of the specified data type.
+ */
+#define DECLARE_SECTION_RANGE_TYPE(type, name)				\
+	 extern type name[], name##__end[];
+
+/**
+ * DECLARE_SECTION_RANGE_TYPE_RO - Declares a read-only type section range
+ *
+ * @name: section area name
+ * @type: data type
+ *
+ * Declares a read only section range of the specified data type.
+ * This should be used for section ranges including read only data or
+ * a collection of executable code.
+ */
+#define DECLARE_SECTION_RANGE_TYPE_RO(type, name)			\
+	 extern const type name[], name##__end[];
+
+/**
+ * DECLARE_SECTION_RANGE - Declares section range used for exectuion
+ *
+ * @name: section range name
+ *
+ * Declares a section range, to be used for execution.
+ */
+#define DECLARE_SECTION_RANGE(name)					\
+	 DECLARE_SECTION_RANGE_TYPE_RO(char, name)
+
+/**
+ * DECLARE_SECTION_RANGE_DATA - Declares a data section area
+ *
+ * @name: table name
+ *
+ * Declares a data linker table entry.
+ */
+#define DECLARE_SECTION_RANGE_DATA(type, name)				\
+	 DECLARE_SECTION_RANGE_TYPE(char, name)
+
 /*
  * Without this you end up with the section macro
  * as part of the name
