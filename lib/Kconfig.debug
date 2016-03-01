@@ -1928,6 +1928,18 @@ config TEST_FIRMWARE
 
 	  If unsure, say N.
 
+config TEST_SYSDATA
+	tristate "Test system data loading via sysdata APIs"
+	default n
+	depends on FW_LOADER
+	help
+	  This builds the "test_sysdata" module that creates a userspace
+	  interface for testing system data file loading using the sysdata API.
+	  This can be used to control the triggering of system data file
+	  loading without needing an actual real device.
+
+	  If unsure, say N.
+
 config TEST_UDELAY
 	tristate "udelay test driver"
 	default n
