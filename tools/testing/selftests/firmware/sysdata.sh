@@ -617,5 +617,6 @@ fi
 sysdata_test_0001
 sysdata_test_0002
 sysdata_test_0003
+sysdata_test_0004
 
 exit 0
