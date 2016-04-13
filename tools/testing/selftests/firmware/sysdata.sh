@@ -623,5 +623,6 @@ sysdata_test_0006
 sysdata_test_0007
 sysdata_test_0008
 sysdata_test_0009
+sysdata_test_0010
 
 exit 0
