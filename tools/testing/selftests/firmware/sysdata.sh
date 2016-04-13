@@ -614,4 +614,6 @@ if [[ $# > 0 ]] ; then
 	exit 0
 fi
 
+sysdata_test_0001
+
 exit 0
