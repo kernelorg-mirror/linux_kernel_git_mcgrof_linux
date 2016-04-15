@@ -167,7 +167,7 @@ dereg:
 	return rc;
 }
 
-module_init(test_firmware_init);
+late_initcall(test_firmware_init);
 
 static void __exit test_firmware_exit(void)
 {
