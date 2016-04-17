@@ -86,4 +86,28 @@ Tracking development enhancements and ideas
 To help track ongoing development for firmware_class and related items to
 firmware_class refer to the kernel newbies wiki page [0].
 
+Converting old firmware API users to sysdata API
+================================================
+
+To help developers convert drivers over to the sysdata API
+a Coccinelle SmPL patch is available to automatically do this
+for you.
+
+Documentation/firmware_class/conver-sysdata.cocci
+
+You'd use it as follows:
+
+spatch \
+	--sp-file Documentation/firmware_class/conver-sysdata.cocci \
+	--in-place  \
+	--dir drivers/path/to-your-driver/ --jobs 4 --use-coccigrep
+
+You should revise the code yourself, and ensure that it is correct,
+compile it and run time test it before submitting a patch to transform
+it using this SmPL patch.
+
+If you use this SmPL patch to transform your driver please use the tag:
+
+Generated-by: Coccinelle SmPL
+
 [0] http://kernelnewbies.org/KernelProjects/firmware-class-enhancements
