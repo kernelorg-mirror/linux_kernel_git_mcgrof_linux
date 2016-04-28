@@ -23,7 +23,7 @@
 #define pr_fmt(fmt) "microcode: " fmt
 
 #include <linux/earlycpio.h>
-#include <linux/firmware.h>
+#include <linux/sysdata.h>
 #include <linux/uaccess.h>
 #include <linux/vmalloc.h>
 #include <linux/initrd.h>
@@ -869,6 +869,31 @@ enum ucode_state load_microcode_amd(int cpu, u8 family, const u8 *data, size_t s
 	return ret;
 }
 
+struct amd_ucode_req {
+	int cpu;
+	struct cpuinfo_x86 *c;
+	enum ucode_state state;
+	const char *name;
+};
+
+static int request_microcode_amd_cb(void *context,
+				    const struct sysdata_file *sysdata)
+{
+	struct amd_ucode_req *req = context;
+
+	if (*(u32 *)sysdata->data != UCODE_MAGIC) {
+		pr_err("invalid magic value (0x%08x)\n",
+		       *(u32 *)sysdata->data);
+		req->state = UCODE_ERROR;
+		return -EINVAL;
+	}
+
+	req->state = load_microcode_amd(req->cpu, req->c->x86,
+					sysdata->data, sysdata->size);
+
+	return 0;
+}
+
 /*
  * AMD microcode firmware naming convention, up to family 15h they are in
  * the legacy file:
@@ -888,10 +913,13 @@ enum ucode_state load_microcode_amd(int cpu, u8 family, const u8 *data, size_t s
 static enum ucode_state request_microcode_amd(int cpu, struct device *device,
 					      bool refresh_fw)
 {
+	struct amd_ucode_req req;
 	char fw_name[36] = "amd-ucode/microcode_amd.bin";
 	struct cpuinfo_x86 *c = &cpu_data(cpu);
-	enum ucode_state ret = UCODE_NFOUND;
-	const struct firmware *fw;
+	const struct sysdata_file_desc sysdata_desc = {
+			SYSDATA_DEFAULT_SYNC(request_microcode_amd_cb, &req),
+			.optional = true,
+	};
 
 	/* reload ucode container only on the boot cpu */
 	if (!refresh_fw || c->cpu_index != boot_cpu_data.cpu_index)
@@ -900,24 +928,16 @@ static enum ucode_state request_microcode_amd(int cpu, struct device *device,
 	if (c->x86 >= 0x15)
 		snprintf(fw_name, sizeof(fw_name), "amd-ucode/microcode_amd_fam%.2xh.bin", c->x86);
 
-	if (request_firmware_direct(&fw, (const char *)fw_name, device)) {
+	req.cpu = cpu;
+	req.c = c;
+	req.name = fw_name;
+	req.state = UCODE_NFOUND;
+
+	if (sysdata_file_request((const char *)fw_name, &sysdata_desc, device)) {
 		pr_debug("failed to load file %s\n", fw_name);
-		goto out;
 	}
 
-	ret = UCODE_ERROR;
-	if (*(u32 *)fw->data != UCODE_MAGIC) {
-		pr_err("invalid magic value (0x%08x)\n", *(u32 *)fw->data);
-		goto fw_release;
-	}
-
-	ret = load_microcode_amd(cpu, c->x86, fw->data, fw->size);
-
- fw_release:
-	release_firmware(fw);
-
- out:
-	return ret;
+	return req.state;
 }
 
 static enum ucode_state
