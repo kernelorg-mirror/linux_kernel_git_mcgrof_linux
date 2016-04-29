@@ -17,12 +17,10 @@ include $(src)/Makefile
 
 include scripts/Makefile.host
 
+# install the firmware for modules
 mod-fw := $(fw-shipped-m)
-# If CONFIG_FIRMWARE_IN_KERNEL isn't set, then install the
-# firmware for in-kernel drivers too.
-ifndef CONFIG_FIRMWARE_IN_KERNEL
+# install the firmware for built-in drivers too.
 mod-fw += $(fw-shipped-y)
-endif
 
 ifneq ($(KBUILD_SRC),)
 # Create output directory if not already present
