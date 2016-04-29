@@ -39,52 +39,6 @@ MODULE_AUTHOR("Manuel Estrada Sainz");
 MODULE_DESCRIPTION("Multi purpose firmware loading support");
 MODULE_LICENSE("GPL");
 
-/* Builtin firmware support */
-
-#ifdef CONFIG_FW_LOADER
-
-extern struct builtin_fw __start_builtin_fw[];
-extern struct builtin_fw __end_builtin_fw[];
-
-static bool fw_get_builtin_firmware(struct firmware *fw, const char *name)
-{
-	struct builtin_fw *b_fw;
-
-	for (b_fw = __start_builtin_fw; b_fw != __end_builtin_fw; b_fw++) {
-		if (strcmp(name, b_fw->name) == 0) {
-			fw->size = b_fw->size;
-			fw->data = b_fw->data;
-			return true;
-		}
-	}
-
-	return false;
-}
-
-static bool fw_is_builtin_firmware(const struct firmware *fw)
-{
-	struct builtin_fw *b_fw;
-
-	for (b_fw = __start_builtin_fw; b_fw != __end_builtin_fw; b_fw++)
-		if (fw->data == b_fw->data)
-			return true;
-
-	return false;
-}
-
-#else /* Module case - no builtin firmware support */
-
-static inline bool fw_get_builtin_firmware(struct firmware *fw, const char *name)
-{
-	return false;
-}
-
-static inline bool fw_is_builtin_firmware(const struct firmware *fw)
-{
-	return false;
-}
-#endif
-
 enum {
 	FW_STATUS_LOADING,
 	FW_STATUS_DONE,
@@ -1025,11 +979,6 @@ _request_firmware_prepare(struct firmware **firmware_p, const char *name,
 		return -ENOMEM;
 	}
 
-	if (fw_get_builtin_firmware(firmware, name)) {
-		dev_dbg(device, "using built-in %s\n", name);
-		return 0; /* assigned */
-	}
-
 	ret = fw_lookup_and_allocate_buf(name, &fw_cache, &buf);
 
 	/*
@@ -1222,8 +1171,7 @@ EXPORT_SYMBOL_GPL(request_firmware_direct);
 void release_firmware(const struct firmware *fw)
 {
 	if (fw) {
-		if (!fw_is_builtin_firmware(fw))
-			firmware_free_data(fw);
+		firmware_free_data(fw);
 		kfree(fw);
 	}
 }
@@ -1376,12 +1324,8 @@ static struct firmware_buf *fw_lookup_buf(const char *fw_name)
 static int uncache_firmware(const char *fw_name)
 {
 	struct firmware_buf *buf;
-	struct firmware fw;
 
 	pr_debug("%s: %s\n", __func__, fw_name);
-
-	if (fw_get_builtin_firmware(&fw, fw_name))
-		return 0;
 
 	buf = fw_lookup_buf(fw_name);
 	if (buf) {
