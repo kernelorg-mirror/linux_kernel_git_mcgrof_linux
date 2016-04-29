@@ -23,7 +23,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
-#include <linux/firmware.h>
+#include <linux/sysdata.h>
 #include <linux/delay.h>
 #include <linux/irq.h>
 #include <linux/spi/spi.h>
@@ -162,53 +162,67 @@ static int p54spi_spi_write_dma(struct p54s_priv *priv, __le32 base,
 	return 0;
 }
 
+static int p54spi_request_firmware_found_cb(void *context,
+					    const struct sysdata_file *sysdata) {
+	struct p54s_priv *priv = context;
+
+	return p54_parse_firmware(priv->hw, priv->firmware);
+}
+
 static int p54spi_request_firmware(struct ieee80211_hw *dev)
 {
 	struct p54s_priv *priv = dev->priv;
+	const struct sysdata_file_desc sysdata_desc = {
+		SYSDATA_DEFAULT_SYNC(p54spi_request_firmware_found_cb, priv),
+	};
 	int ret;
 
 	/* FIXME: should driver use it's own struct device? */
-	ret = request_firmware(&priv->firmware, "3826.arm", &priv->spi->dev);
-
+	ret = sysdata_file_request("3826.arm", &sysdata_desc, &priv->spi->dev);
 	if (ret < 0) {
-		dev_err(&priv->spi->dev, "request_firmware() failed: %d", ret);
-		return ret;
+		dev_err(&priv->spi->dev,
+			"request_firmware() failed: %d", ret);
 	}
-
-	ret = p54_parse_firmware(dev, priv->firmware);
-	if (ret) {
-		release_firmware(priv->firmware);
-		return ret;
-	}
-
-	return 0;
+	return ret;
 }
 
+#ifdef CONFIG_P54_SPI_DEFAULT_EEPROM
+static int p54spi_load_eeprom_default(void *context)
+{
+	struct p54s_priv *priv = context;
+	struct ieee80211_hw *dev = priv->hw;
+
+	dev_info(&priv->spi->dev, "loading default eeprom...\n");
+	return p54_parse_eeprom(dev, (void *) p54spi_eeprom,
+				sizeof(p54spi_eeprom));
+}
+#endif
+
+static int p54spi_load_eeprom_cb(void *context,
+				 const struct sysdata_file *sysdata)
+{
+	struct p54s_priv *priv = context;
+	struct ieee80211_hw *dev = priv->hw;
+
+	dev_info(&priv->spi->dev, "loading user eeprom...\n");
+	return p54_parse_eeprom(dev, (void *) sysdata->data,
+			        (int)sysdata->size);
+}
 static int p54spi_request_eeprom(struct ieee80211_hw *dev)
 {
 	struct p54s_priv *priv = dev->priv;
-	const struct firmware *eeprom;
-	int ret;
+	const struct sysdata_file_desc sysdata_desc = {
+		SYSDATA_DEFAULT_SYNC(p54spi_load_eeprom_cb, priv),
+#ifdef CONFIG_P54_SPI_DEFAULT_EEPROM
+		SYSDATA_SYNC_OPT_CB(p54spi_load_eeprom_default, priv),
+#endif
+	};
 
 	/* allow users to customize their eeprom.
 	 */
 
-	ret = request_firmware_direct(&eeprom, "3826.eeprom", &priv->spi->dev);
-	if (ret < 0) {
-#ifdef CONFIG_P54_SPI_DEFAULT_EEPROM
-		dev_info(&priv->spi->dev, "loading default eeprom...\n");
-		ret = p54_parse_eeprom(dev, (void *) p54spi_eeprom,
-				       sizeof(p54spi_eeprom));
-#else
-		dev_err(&priv->spi->dev, "Failed to request user eeprom\n");
-#endif /* CONFIG_P54_SPI_DEFAULT_EEPROM */
-	} else {
-		dev_info(&priv->spi->dev, "loading user eeprom...\n");
-		ret = p54_parse_eeprom(dev, (void *) eeprom->data,
-				       (int)eeprom->size);
-		release_firmware(eeprom);
-	}
-	return ret;
+	return sysdata_file_request("3826.eeprom", &sysdata_desc,
+				    &priv->spi->dev);
 }
 
 static int p54spi_upload_firmware(struct ieee80211_hw *dev)
@@ -692,7 +706,6 @@ static int p54spi_remove(struct spi_device *spi)
 
 	gpio_free(p54spi_gpio_power);
 	gpio_free(p54spi_gpio_irq);
-	release_firmware(priv->firmware);
 
 	mutex_destroy(&priv->mutex);
 

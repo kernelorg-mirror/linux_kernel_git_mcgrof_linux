@@ -16,7 +16,7 @@
  * published by the Free Software Foundation.
  */
 
-#include <linux/firmware.h>
+#include <linux/sysdata.h>
 #include <linux/etherdevice.h>
 #include <linux/sort.h>
 #include <linux/slab.h>
