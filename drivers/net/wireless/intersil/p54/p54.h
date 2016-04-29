@@ -268,7 +268,8 @@ struct p54_common {
 /* interfaces for the drivers */
 int p54_rx(struct ieee80211_hw *dev, struct sk_buff *skb);
 void p54_free_skb(struct ieee80211_hw *dev, struct sk_buff *skb);
-int p54_parse_firmware(struct ieee80211_hw *dev, const struct firmware *fw);
+int p54_parse_firmware(struct ieee80211_hw *dev,
+		       const struct sysdata_file *fw);
 int p54_parse_eeprom(struct ieee80211_hw *dev, void *eeprom, int len);
 int p54_read_eeprom(struct ieee80211_hw *dev);
 

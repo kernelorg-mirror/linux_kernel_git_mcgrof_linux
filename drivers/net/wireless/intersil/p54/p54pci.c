@@ -15,7 +15,7 @@
 
 #include <linux/pci.h>
 #include <linux/slab.h>
-#include <linux/firmware.h>
+#include <linux/sysdata.h>
 #include <linux/etherdevice.h>
 #include <linux/delay.h>
 #include <linux/completion.h>
@@ -490,7 +490,7 @@ static int p54p_open(struct ieee80211_hw *dev)
 	return 0;
 }
 
-static void p54p_firmware_step2(const struct firmware *fw,
+static void p54p_firmware_step2(const struct sysdata_file *fw, 
 				void *context)
 {
 	struct p54p_priv *priv = context;
@@ -520,8 +520,6 @@ static void p54p_firmware_step2(const struct firmware *fw,
 
 out:
 
-	complete(&priv->fw_loaded);
-
 	if (err) {
 		struct device *parent = pdev->dev.parent;
 
@@ -540,6 +538,17 @@ out:
 	}
 
 	pci_dev_put(pdev);
+}
+
+static int p54p_load_firmware(struct p54p_priv *priv)
+{
+	const struct sysdata_file_desc sysdata_desc = {
+		SYSDATA_DEFAULT_ASYNC(p54p_firmware_step2, priv),
+	};
+
+	return sysdata_file_request_async("isl3886pci", &sysdata_desc,
+					  &priv->pdev->dev,
+					  &priv->fw_async_cookie);
 }
 
 static int p54p_probe(struct pci_dev *pdev,
@@ -595,7 +604,6 @@ static int p54p_probe(struct pci_dev *pdev,
 	priv = dev->priv;
 	priv->pdev = pdev;
 
-	init_completion(&priv->fw_loaded);
 	SET_IEEE80211_DEV(dev, &pdev->dev);
 	pci_set_drvdata(pdev, dev);
 
@@ -620,9 +628,7 @@ static int p54p_probe(struct pci_dev *pdev,
 	spin_lock_init(&priv->lock);
 	tasklet_init(&priv->tasklet, p54p_tasklet, (unsigned long)dev);
 
-	err = request_firmware_nowait(THIS_MODULE, 1, "isl3886pci",
-				      &priv->pdev->dev, GFP_KERNEL,
-				      priv, p54p_firmware_step2);
+	err = p54p_load_firmware(priv);
 	if (!err)
 		return 0;
 
@@ -652,9 +658,8 @@ static void p54p_remove(struct pci_dev *pdev)
 		return;
 
 	priv = dev->priv;
-	wait_for_completion(&priv->fw_loaded);
+	sysdata_synchronize_request(priv->fw_async_cookie);
 	p54_unregister_common(dev);
-	release_firmware(priv->firmware);
 	pci_free_consistent(pdev, sizeof(*priv->ring_control),
 			    priv->ring_control, priv->ring_control_dma);
 	iounmap(priv->map);

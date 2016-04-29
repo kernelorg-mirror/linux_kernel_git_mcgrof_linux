@@ -17,7 +17,7 @@
  */
 
 #include <linux/slab.h>
-#include <linux/firmware.h>
+#include <linux/sysdata.h>
 #include <linux/etherdevice.h>
 #include <linux/export.h>
 
@@ -27,7 +27,8 @@
 #include "eeprom.h"
 #include "lmac.h"
 
-int p54_parse_firmware(struct ieee80211_hw *dev, const struct firmware *fw)
+int p54_parse_firmware(struct ieee80211_hw *dev,
+		       const struct sysdata_file *fw)
 {
 	struct p54_common *priv = dev->priv;
 	struct exp_if *exp_if;

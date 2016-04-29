@@ -94,7 +94,7 @@ struct p54p_priv {
 	struct pci_dev *pdev;
 	struct p54p_csr __iomem *map;
 	struct tasklet_struct tasklet;
-	const struct firmware *firmware;
+	const struct sysdata_file *firmware;
 	spinlock_t lock;
 	struct p54p_ring_control *ring_control;
 	dma_addr_t ring_control_dma;
@@ -105,7 +105,7 @@ struct p54p_priv {
 	struct sk_buff *tx_buf_data[32];
 	struct sk_buff *tx_buf_mgmt[4];
 	struct completion boot_comp;
-	struct completion fw_loaded;
+	async_cookie_t fw_async_cookie;
 };
 
 #endif /* P54USB_H */
