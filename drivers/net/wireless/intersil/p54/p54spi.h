@@ -119,7 +119,7 @@ struct p54s_priv {
 	struct list_head tx_pending;
 
 	enum fw_state fw_state;
-	const struct firmware *firmware;
+	const struct sysdata_file *firmware;
 };
 
 #endif /* P54SPI_H */
