@@ -17,7 +17,7 @@
  */
 
 #include <linux/slab.h>
-#include <linux/firmware.h>
+#include <linux/sysdata.h>
 #include <linux/etherdevice.h>
 #include <linux/module.h>
 
