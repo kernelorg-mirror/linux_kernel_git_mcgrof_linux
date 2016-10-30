@@ -38,12 +38,13 @@ int __request_module(bool wait, const char *name, ...);
 #define request_module_nowait(mod...) __request_module(false, mod)
 #define try_then_request_module(x, mod...) \
 	((x) ?: (__request_module(true, mod), (x)))
+void init_kmod_umh(void);
 #else
 static inline int request_module(const char *name, ...) { return -ENOSYS; }
 static inline int request_module_nowait(const char *name, ...) { return -ENOSYS; }
+static inline void init_kmod_umh(void) { }
 #define try_then_request_module(x, mod...) (x)
 #endif
-
 
 struct cred;
 struct file;

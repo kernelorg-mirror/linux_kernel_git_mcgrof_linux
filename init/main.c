@@ -630,6 +630,7 @@ asmlinkage __visible void __init start_kernel(void)
 	thread_stack_cache_init();
 	cred_init();
 	fork_init();
+	init_kmod_umh();
 	proc_caches_init();
 	buffer_init();
 	key_init();

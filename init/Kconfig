@@ -2095,6 +2095,29 @@ config TRIM_UNUSED_KSYMS
 
 	  If unsure, or if you need to build out-of-tree modules, say N.
 
+config MAX_KMOD_CONCURRENT
+	int "Max allowed concurrent request_module() calls (6=>64, 10=>1024)"
+	range 0 14
+	default 6 if !BASE_SMALL
+	default 7 if BASE_SMALL
+	help
+	  The kernel restricts the number of possible concurrent calls to
+	  request_module() to help avoid a recursive loop possible with
+	  modules. The default maximum number of concurrent threads allowed
+	  to run request_module() will be:
+
+	    max_modprobes = min(max_threads/2, 2 << CONFIG_MAX_KMOD_CONCURRENT);
+
+	  The value set in CONFIG_MAX_KMOD_CONCURRENT represents then the power
+	  of 2 value used at boot time for the above computation. You can
+	  override the default built value using the kernel parameter:
+
+		kmod.max_modprobes=4096
+
+	  We set this to default to 64 (2^6) concurrent modprobe threads for
+	  small systems, for larger systems this defaults to 128 (2^7)
+	  concurrent modprobe threads.
+
 endif # MODULES
 
 config MODULES_TREE_LOOKUP
