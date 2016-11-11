@@ -624,8 +624,8 @@ static bool module_name_match(struct module *mod, const char *name, size_t len)
  * Search for module by name: must hold module_mutex (or preempt disabled
  * for read-only access).
  */
-static struct module *find_module_all(const char *name, size_t len,
-				      bool even_unformed)
+struct module *find_module_all(const char *name, size_t len,
+			       bool even_unformed)
 {
 	struct module *mod;
 
@@ -3680,6 +3680,11 @@ static int may_init_module(void)
 		return -EPERM;
 
 	return 0;
+}
+
+int module_wait_until_finished(const char *name)
+{
+	return wait_event_interruptible(module_wq, finished_loading(name));
 }
 
 /*

@@ -44,6 +44,11 @@
 static atomic_t kmod_concurrent_max = ATOMIC_INIT(MAX_KMOD_CONCURRENT);
 static DECLARE_WAIT_QUEUE_HEAD(kmod_wq);
 
+bool finished_loading(const char *name);
+int module_wait_until_finished(const char *name);
+struct module *find_module_all(const char *name, size_t len,
+			       bool even_unformed);
+
 /*
  * This is a restriction on having *all* MAX_KMOD_CONCURRENT threads
  * running at the same time without returning. When this happens we
@@ -104,6 +109,73 @@ free_argv:
 	kfree(argv);
 out:
 	return -ENOMEM;
+}
+
+static bool kmod_exists(char *name)
+{
+	struct module *mod;
+
+	mutex_lock(&module_mutex);
+	mod = find_module_all(name, strlen(name), true);
+	mutex_unlock(&module_mutex);
+
+	if (mod)
+		return true;
+
+	return false;
+}
+
+/*
+ * The assumption is this must be a module, it could still not be live though
+ * since kmod <= 19 returns 0 even if it was not ready yet.  Allow for force
+ * wait check in case you are stuck on old userspace.
+ */
+static int wait_for_kmod(char *name)
+{
+	int ret = 0;
+
+	if (!finished_loading(name))
+		ret = module_wait_until_finished(name);
+
+	return ret;
+}
+
+/*
+ * kmod <= 19 will tell us modprobe returned 0 even if the module
+ * is not ready yet, it does this because it checks the /sys/module/mod-name
+ * directory and if its created but the /sys/module/mod-name/initstate is not
+ * created it assumes you have a built-in driver. At this point the module
+ * is still unformed, and telling the kernel at any point via request_module()
+ * will cause issues given a lot of places in the kernel assert that the driver
+ * will be present and ready. We need to account for this.
+ *
+ * If we had a module and even if buggy modprobe returned 0, we know we'd at
+ * least have a dangling kmod entry we could fetch.
+ *
+ * If modprobe returned 0 and we cannot find a kmod entry this is a good
+ * indicator your by userspace and kernel space that what you have is built-in.
+ *
+ * If modprobe returned 0 and we can find a kmod entry we should air on the
+ * side of caution and wait for the module to become ready or going.
+ *
+ * In the worst case, for built-in, we have to check on the module list for
+ * as many aliases possible the kernel gives the module, if that is n, that
+ * n traversals on the module list.
+ */
+static int finished_kmod_load(char *name, bool wait)
+{
+	int ret = -ENOENT;
+
+	if (kmod_exists(name)) {
+		if (finished_loading(name))
+			return 0;
+		else if (wait)
+			ret = wait_for_kmod(name);
+		else
+			ret = -EINPROGRESS;
+	}
+
+	return ret;
 }
 
 /**
@@ -169,6 +241,8 @@ int __request_module(bool wait, const char *fmt, ...)
 	trace_module_request(module_name, wait, _RET_IP_);
 
 	ret = call_modprobe(module_name, wait ? UMH_WAIT_PROC : UMH_WAIT_EXEC);
+	if (!ret)
+		ret = finished_kmod_load(module_name, wait);
 
 	atomic_inc(&kmod_concurrent_max);
 	wake_up(&kmod_wq);
