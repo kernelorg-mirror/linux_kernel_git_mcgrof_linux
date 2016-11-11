@@ -587,8 +587,8 @@ EXPORT_SYMBOL_GPL(find_symbol);
  * Search for module by name: must hold module_mutex (or preempt disabled
  * for read-only access).
  */
-static struct module *find_module_all(const char *name, size_t len,
-				      bool even_unformed)
+struct module *find_module_all(const char *name, size_t len,
+			       bool even_unformed)
 {
 	struct module *mod;
 
@@ -3313,7 +3313,7 @@ static int post_relocation(struct module *mod, const struct load_info *info)
 }
 
 /* Is this module of this name done loading?  No locks held. */
-static bool finished_loading(const char *name)
+bool finished_loading(const char *name)
 {
 	struct module *mod;
 	bool ret;
@@ -3472,6 +3472,11 @@ static int may_init_module(void)
 		return -EPERM;
 
 	return 0;
+}
+
+int module_wait_until_finished(const char *name)
+{
+	return wait_event_interruptible(module_wq, finished_loading(name));
 }
 
 /*
