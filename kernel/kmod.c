@@ -117,7 +117,7 @@ static int kmod_umh_threads_get(void)
 	if (atomic_read(&kmod_concurrent) < max_modprobes)
 		return 0;
 	atomic_dec(&kmod_concurrent);
-	return -ENOMEM;
+	return -EBUSY;
 }
 
 static void kmod_umh_threads_put(void)
