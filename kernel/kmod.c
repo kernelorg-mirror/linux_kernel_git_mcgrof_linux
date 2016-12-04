@@ -113,16 +113,28 @@ out:
 
 static int kmod_umh_threads_get(void)
 {
+	int ret = 0;
+
+	preempt_disable();
 	atomic_inc(&kmod_concurrent);
 	if (atomic_read(&kmod_concurrent) < max_modprobes)
-		return 0;
-	atomic_dec(&kmod_concurrent);
-	return -EBUSY;
+		goto out;
+
+	atomic_dec_if_positive(&kmod_concurrent);
+	ret = -EBUSY;
+out:
+	preempt_enable();
+	return 0;
 }
 
 static void kmod_umh_threads_put(void)
 {
-	atomic_dec(&kmod_concurrent);
+	int ret;
+
+	preempt_disable();
+	ret = atomic_dec_if_positive(&kmod_concurrent);
+	WARN_ON(ret < 0);
+	preempt_enable();
 }
 
 /**
