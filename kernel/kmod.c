@@ -138,6 +138,27 @@ static void kmod_umh_threads_put(void)
 }
 
 /**
+ * get_kmod_umh_limit - get concurrent modprobe thread limit
+ *
+ * Returns the number of allowed concurrent modprobe calls.
+ */
+unsigned int get_kmod_umh_limit(void)
+{
+	return max_modprobes;
+}
+EXPORT_SYMBOL_GPL(get_kmod_umh_limit);
+
+/**
+ * get_kmod_umh_count - get number of concurrent modprobe calls running
+ *
+ * Returns the number of concurrent modprobe calls currently running.
+ */
+int get_kmod_umh_count(void)
+{
+	return atomic_read(&kmod_concurrent);
+}
+
+/**
  * __request_module - try to load a kernel module
  * @wait: wait (or not) for the operation to complete
  * @fmt: printf style format string for the name of the module
@@ -196,6 +217,11 @@ int __request_module(bool wait, const char *fmt, ...)
 }
 EXPORT_SYMBOL(__request_module);
 
+static void __set_max_modprobes(unsigned int suggested)
+{
+	max_modprobes = min((unsigned int) max_threads/2, suggested);
+}
+
 /*
  * If modprobe needs a service that is in a module, we get a recursive
  * loop.  Limit the number of running kmod threads to max_threads/2 or
@@ -212,12 +238,65 @@ EXPORT_SYMBOL(__request_module);
  * 4096 concurrent modprobe instances:
  *
  *	kmod.max_modprobes=4096
+ *
+ * You can also set the limit via sysctl:
+ *
+ * echo 4096 > /proc/sys/kernel/kmod-limit
+ *
+ * You can also set the query the current thread count:
+ *
+ * cat /proc/sys/kernel/kmod-count
+ *
+ * These knobs should enable userspace to more gracefully and
+ * deterministically handle module loading.
  */
 void __init init_kmod_umh(void)
 {
 	if (!max_modprobes)
-		max_modprobes = min(max_threads/2,
-				    2 << CONFIG_MAX_KMOD_CONCURRENT);
+		__set_max_modprobes(2 << CONFIG_MAX_KMOD_CONCURRENT);
+}
+
+int sysctl_kmod_count(struct ctl_table *table, int write,
+		      void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	struct ctl_table t;
+	int ret = 0;
+	int count = get_kmod_umh_count();
+
+	t = *table;
+	t.data = &count;
+
+	if (write)
+		return -EPERM;
+
+	ret = proc_dointvec_minmax(&t, write, buffer, lenp, ppos);
+
+	return ret;
+}
+
+int sysctl_kmod_limit(struct ctl_table *table, int write,
+		      void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	struct ctl_table t;
+	int ret;
+	unsigned int local_max_modprobes = max_modprobes;
+	unsigned int min = 0;
+	unsigned int max = max_threads/2;
+
+	t = *table;
+	t.data = &local_max_modprobes;
+	t.extra1 = &min;
+	t.extra2 = &max;
+
+	ret = proc_douintvec_minmax(&t, write, buffer, lenp, ppos);
+	if (ret == -ERANGE)
+		pr_err("modprobe thread valid range: %u - %u\n", min, max);
+	if (ret || !write)
+		return ret;
+
+	__set_max_modprobes((unsigned int) local_max_modprobes);
+
+	return 0;
 }
 
 #endif /* CONFIG_MODULES */

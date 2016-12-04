@@ -39,12 +39,20 @@ int __request_module(bool wait, const char *name, ...);
 #define try_then_request_module(x, mod...) \
 	((x) ?: (__request_module(true, mod), (x)))
 void init_kmod_umh(void);
+unsigned int get_kmod_umh_limit(void);
+int sysctl_kmod_count(struct ctl_table *table, int write,
+		      void __user *buffer, size_t *lenp, loff_t *ppos);
+int sysctl_kmod_limit(struct ctl_table *table, int write,
+		      void __user *buffer, size_t *lenp, loff_t *ppos);
 #else
 static inline int request_module(const char *name, ...) { return -ENOSYS; }
 static inline int request_module_nowait(const char *name, ...) { return -ENOSYS; }
 static inline void init_kmod_umh(void) { }
+static unsigned int get_kmod_umh_limit(void) { return 0; }
 #define try_then_request_module(x, mod...) (x)
 #endif
+
+#define get_kmod_umh_limit get_kmod_umh_limit
 
 struct cred;
 struct file;
