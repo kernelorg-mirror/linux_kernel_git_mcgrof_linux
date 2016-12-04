@@ -158,7 +158,6 @@ int __request_module(bool wait, const char *fmt, ...)
 	va_list args;
 	char module_name[MODULE_NAME_LEN];
 	int ret;
-	static int kmod_loop_msg;
 
 	/*
 	 * We don't allow synchronous module loading from async.  Module
@@ -183,13 +182,8 @@ int __request_module(bool wait, const char *fmt, ...)
 
 	ret = kmod_umh_threads_get();
 	if (ret) {
-		/* We may be blaming an innocent here, but unlikely */
-		if (kmod_loop_msg < 5) {
-			printk(KERN_ERR
-			       "request_module: runaway loop modprobe %s\n",
-			       module_name);
-			kmod_loop_msg++;
-		}
+		pr_err_ratelimited("request_module: modprobe limit (%u) reached with module %s\n",
+				   max_modprobes, module_name);
 		return ret;
 	}
 
