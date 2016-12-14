@@ -2485,18 +2485,26 @@ static char *next_string(char *string, unsigned long *secsize)
 	return string;
 }
 
-static char *get_modinfo(struct load_info *info, const char *tag)
+static const char *get_modinfo_idx(struct load_info *info, const char *tag,
+				   unsigned int tag_idx)
 {
 	char *p;
 	unsigned int taglen = strlen(tag);
 	Elf_Shdr *infosec = &info->sechdrs[info->index.info];
 	unsigned long size = infosec->sh_size;
+	unsigned int num_tags = 0;
 
 	for (p = (char *)infosec->sh_addr; p; p = next_string(p, &size)) {
-		if (strncmp(p, tag, taglen) == 0 && p[taglen] == '=')
+		if (strncmp(p, tag, taglen) == 0 && p[taglen] == '=' &&
+		    num_tags++ == tag_idx)
 			return p + taglen + 1;
 	}
 	return NULL;
+}
+
+static const char *get_modinfo(struct load_info *info, const char *tag)
+{
+	return get_modinfo_idx(info, tag, 0);
 }
 
 static void setup_modinfo(struct module *mod, struct load_info *info)
