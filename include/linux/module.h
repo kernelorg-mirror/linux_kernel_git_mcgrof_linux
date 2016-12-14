@@ -341,6 +341,10 @@ struct module {
 	const char *srcversion;
 	struct kobject *holders_dir;
 
+#ifdef CONFIG_MODULE_DEBUG
+	unsigned int num_aliases;
+	const char **aliases;
+#endif
 	/* Exported symbols */
 	const struct kernel_symbol *syms;
 	const s32 *crcs;

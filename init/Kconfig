@@ -1688,6 +1688,13 @@ menuconfig MODULES
 
 if MODULES
 
+config MODULE_DEBUG
+	bool "Enable debugging information for modules"
+	default n
+	help
+	  Enables debugging of the module infrastructure. Say no unless you
+	  are debugging the module framework.
+
 config MODULE_FORCE_LOAD
 	bool "Forced module loading"
 	default n
