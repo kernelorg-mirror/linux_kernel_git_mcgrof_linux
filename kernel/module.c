@@ -2129,6 +2129,28 @@ void __weak module_arch_freeing_init(struct module *mod)
 {
 }
 
+#ifdef CONFIG_MODULE_DEBUG
+static void free_mod_aliases(struct module *mod)
+{
+	unsigned int i;
+
+	if (!mod->num_aliases)
+		return;
+
+	for (i=0; i < mod->num_aliases; i++) {
+		kfree(mod->aliases[i]);
+		mod->aliases[i] = NULL;
+	}
+
+	kfree(mod->aliases);
+	mod->aliases = NULL;
+}
+#else
+static void free_mod_aliases(struct module *mod)
+{
+}
+#endif
+
 /* Free a module, remove from lists, etc. */
 static void free_module(struct module *mod)
 {
@@ -2174,6 +2196,7 @@ static void free_module(struct module *mod)
 	module_memfree(mod->init_layout.base);
 	kfree(mod->args);
 	percpu_modfree(mod);
+	free_mod_aliases(mod);
 
 	/* Free lock-classes; relies on the preceding sync_rcu(). */
 	lockdep_free_key_range(mod->core_layout.base, mod->core_layout.size);
@@ -2484,6 +2507,33 @@ static char *next_string(char *string, unsigned long *secsize)
 	}
 	return string;
 }
+
+#ifdef CONFIG_MODULE_DEBUG
+static int get_modinfo_tags(struct load_info *info,
+			    const char *tag,
+			    unsigned int *num_entries)
+{
+	char *p;
+	unsigned int taglen = strlen(tag);
+	Elf_Shdr *infosec = &info->sechdrs[info->index.info];
+	unsigned long size = infosec->sh_size;
+	const char *value;
+	unsigned int len, tags_size = 0;
+
+	for (p = (char *)infosec->sh_addr; p; p = next_string(p, &size)) {
+		if (strncmp(p, tag, taglen) == 0 && p[taglen] == '=') {
+			value = p + taglen + 1;
+			len = strlen(value);
+			if (len >=0 && len <= PAGE_SIZE) {
+				(*num_entries)++;
+				tags_size+=len;
+			}
+		}
+	}
+
+	return tags_size;
+}
+#endif
 
 static const char *get_modinfo_idx(struct load_info *info, const char *tag,
 				   unsigned int tag_idx)
@@ -3011,6 +3061,53 @@ static struct module *setup_load_info(struct load_info *info, int flags)
 	return mod;
 }
 
+#ifdef CONFIG_MODULE_DEBUG
+static int module_process_aliases(struct module *mod, struct load_info *info)
+{
+	unsigned int size, i, num_entries = 0;
+	const char *alias;
+
+	size = get_modinfo_tags(info, "alias", &num_entries);
+	if (WARN_ON(!size))
+		return 0;
+
+	mod->aliases = kzalloc(num_entries * sizeof(char *), GFP_KERNEL);
+	if (!mod->aliases)
+		return -ENOMEM;
+
+	pr_debug("module %s num_aliases: %u\n", mod->name, num_entries);
+
+	for (i=0; i < num_entries; i++) {
+		alias = get_modinfo_idx(info, "alias", i);
+		pr_debug("alias[%u] = %s\n", i, alias);
+		mod->aliases[i] = kasprintf(GFP_KERNEL, "%s", alias);
+		if (!mod->aliases[i])
+			goto err_free;
+	}
+
+	mod->num_aliases = num_entries;
+
+	return 0;
+
+err_free:
+	while (i!=0) {
+		i--;
+		kfree(mod->aliases[i]);
+		mod->aliases[i] = NULL;
+	}
+
+	kfree(mod->aliases);
+	mod->aliases = NULL;
+
+	return -ENOMEM;
+}
+#else
+static int module_process_aliases(struct module *mod, struct load_info *info)
+{
+	return 0;
+}
+#endif
+
 static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 {
 	const char *modmagic = get_modinfo(info, "vermagic");
@@ -3043,6 +3140,12 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 			"is unknown, you have been warned.\n", mod->name);
 	}
 
+	if (get_modinfo(info, "alias")) {
+		err = module_process_aliases(mod, info);
+		if (err)
+			goto err_out_skip_alloc;
+	}
+
 	err = check_modinfo_livepatch(mod, info);
 	if (err)
 		goto err_out;
@@ -3052,6 +3155,8 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 
 	return 0;
 err_out:
+	free_mod_aliases(mod);
+err_out_skip_alloc:
 	return err;
 }
 
@@ -3349,6 +3454,7 @@ static struct module *layout_and_allocate(struct load_info *info, int flags)
 	kmemleak_load_module(mod, info);
 	return mod;
 err_out:
+	free_mod_aliases(mod);
 	return ERR_PTR(err);
 }
 
@@ -3820,6 +3926,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	synchronize_sched();
 	mutex_unlock(&module_mutex);
  free_module:
+	free_mod_aliases(mod);
 	/*
 	 * Ftrace needs to clean up what it initialized.
 	 * This does nothing if ftrace_module_init() wasn't called,
