@@ -600,6 +600,26 @@ const struct kernel_symbol *find_symbol(const char *name,
 }
 EXPORT_SYMBOL_GPL(find_symbol);
 
+static bool module_name_match(struct module *mod, const char *name, size_t len)
+{
+	unsigned int i;
+	const char *alias;
+
+	if (strlen(mod->name) == len && !memcmp(mod->name, name, len))
+		return true;
+
+	for (i=0; i < mod->num_aliases; i++) {
+		alias = mod->aliases[i];
+		if (strlen(alias) == len && !memcmp(alias, name, len)) {
+			pr_debug("module %s alias matched: alias[%u] = %s\n",
+				 mod->name, i, alias);
+			return true;
+		}
+	}
+
+	return false;
+}
+
 /*
  * Search for module by name: must hold module_mutex (or preempt disabled
  * for read-only access).
@@ -614,7 +634,7 @@ static struct module *find_module_all(const char *name, size_t len,
 	list_for_each_entry_rcu(mod, &modules, list) {
 		if (!even_unformed && mod->state == MODULE_STATE_UNFORMED)
 			continue;
-		if (strlen(mod->name) == len && !memcmp(mod->name, name, len))
+		if (module_name_match(mod, name, len))
 			return mod;
 	}
 	return NULL;
