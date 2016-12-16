@@ -3402,23 +3402,28 @@ static bool blacklisted(const char *module_name)
 }
 core_param(module_blacklist, module_blacklist, charp, 0400);
 
-static struct module *layout_and_allocate(struct load_info *info, int flags)
+/* Module within temporary copy, this doesn't do any allocation  */
+static int early_mod_check(struct load_info *info, int flags,
+			   struct module *mod)
 {
-	/* Module within temporary copy. */
-	struct module *mod;
-	unsigned int ndx;
 	int err;
 
-	mod = setup_load_info(info, flags);
-	if (IS_ERR(mod))
-		return mod;
-
 	if (blacklisted(info->name))
-		return ERR_PTR(-EPERM);
+		return -EPERM;
 
 	err = check_modinfo(mod, info, flags);
 	if (err)
-		return ERR_PTR(err);
+		return err;
+
+	return 0;
+}
+
+/* This starts to process the module and finally allocates a copy */
+static struct module *layout_and_allocate(struct load_info *info,
+					  struct module *mod)
+{
+	unsigned int ndx;
+	int err;
 
 	/* Allow arches to frob section contents and sizes.  */
 	err = module_frob_arch_sections(info->hdr, info->sechdrs,
@@ -3772,8 +3777,17 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	if (err)
 		goto free_copy;
 
-	/* Figure out module layout, and allocate all the memory. */
-	mod = layout_and_allocate(info, flags);
+	mod = setup_load_info(info, flags);
+	if (IS_ERR(mod))
+		return -EINVAL;
+
+	/* layout and check */
+	err = early_mod_check(info, flags, mod);
+	if (err)
+		goto free_copy;
+
+	/* Layout and allocate all the memory. */
+	mod = layout_and_allocate(info, mod);
 	if (IS_ERR(mod)) {
 		err = PTR_ERR(mod);
 		goto free_copy;
