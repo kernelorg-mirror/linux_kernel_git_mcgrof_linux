@@ -3321,6 +3321,9 @@ static int early_mod_check(struct load_info *info, int flags,
 	if (err)
 		return err;
 
+	if (finished_loading(info->name))
+		return 0;
+
 	return 0;
 }
 
