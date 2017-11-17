@@ -6,7 +6,46 @@
 # won't find so that we can do the load ourself manually.
 set -e
 
+PROC_CONFIG="/proc/config.gz"
+TEST_DIR=$(dirname $0)
+
 modprobe test_firmware
+if [ ! -f $PROC_CONFIG ]; then
+	if modprobe configs 2>/dev/null; then
+		echo "Loaded configs module"
+		if [ ! -f $PROC_CONFIG ]; then
+			echo "You must have the following enabled in your kernel:" >&2
+			cat $TEST_DIR/config >&2
+			echo "Resorting to old heuristics" >&2
+		fi
+	else
+		echo "Failed to load configs module, using old heuristics" >&2
+	fi
+fi
+
+kconfig_has()
+{
+	if [ -f $PROC_CONFIG ]; then
+		if zgrep -q $1 $PROC_CONFIG 2>/dev/null; then
+			echo "yes"
+		else
+			echo "no"
+		fi
+	else
+		# We currently don't have easy heuristics to infer this
+		# so best we can do is just try to use the kernel assuming
+		# you had enabled it. This matches the old behaviour.
+		if [ "$1" = "CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y" ]; then
+			echo "yes"
+		elif [ "$1" = "CONFIG_FW_LOADER_USER_HELPER=y" ]; then
+			if [ -d /sys/class/firmware/ ]; then
+				echo yes
+			else
+				echo no
+			fi
+		fi
+	fi
+}
 
 DIR=/sys/devices/virtual/misc/test_firmware
 
@@ -14,6 +53,7 @@ DIR=/sys/devices/virtual/misc/test_firmware
 # These days no one enables CONFIG_FW_LOADER_USER_HELPER so check for that
 # as an indicator for CONFIG_FW_LOADER_USER_HELPER.
 HAS_FW_LOADER_USER_HELPER=$(if [ -d /sys/class/firmware/ ]; then echo yes; else echo no; fi)
+HAS_FW_LOADER_USER_HELPER_FALLBACK=$(kconfig_has CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y)
 
 if [ "$HAS_FW_LOADER_USER_HELPER" = "yes" ]; then
        OLD_TIMEOUT=$(cat /sys/class/firmware/timeout)
@@ -286,7 +326,10 @@ run_sysfs_custom_load_tests()
 	fi
 }
 
-run_sysfs_main_tests
+if [ "$HAS_FW_LOADER_USER_HELPER_FALLBACK" = "yes" ]; then
+	run_sysfs_main_tests
+fi
+
 run_sysfs_custom_load_tests
 
 exit 0
