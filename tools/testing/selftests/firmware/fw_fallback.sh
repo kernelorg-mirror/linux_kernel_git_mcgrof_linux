@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # SPDX-License-Identifier: GPL-2.0
 # This validates that the kernel will fall back to using the fallback mechanism
 # to load firmware it can't find on disk itself. We must request a firmware
@@ -6,68 +6,17 @@
 # won't find so that we can do the load ourself manually.
 set -e
 
-PROC_CONFIG="/proc/config.gz"
+TEST_REQS_FW_SYSFS_FALLBACK="yes"
+TEST_REQS_FW_SET_CUSTOM_PATH="no"
 TEST_DIR=$(dirname $0)
+source $TEST_DIR/fw_lib.sh
 
-modprobe test_firmware
-if [ ! -f $PROC_CONFIG ]; then
-	if modprobe configs 2>/dev/null; then
-		echo "Loaded configs module"
-		if [ ! -f $PROC_CONFIG ]; then
-			echo "You must have the following enabled in your kernel:" >&2
-			cat $TEST_DIR/config >&2
-			echo "Resorting to old heuristics" >&2
-		fi
-	else
-		echo "Failed to load configs module, using old heuristics" >&2
-	fi
-fi
+check_mods
+check_setup
+verify_reqs
+setup_tmp_file
 
-kconfig_has()
-{
-	if [ -f $PROC_CONFIG ]; then
-		if zgrep -q $1 $PROC_CONFIG 2>/dev/null; then
-			echo "yes"
-		else
-			echo "no"
-		fi
-	else
-		# We currently don't have easy heuristics to infer this
-		# so best we can do is just try to use the kernel assuming
-		# you had enabled it. This matches the old behaviour.
-		if [ "$1" = "CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y" ]; then
-			echo "yes"
-		elif [ "$1" = "CONFIG_FW_LOADER_USER_HELPER=y" ]; then
-			if [ -d /sys/class/firmware/ ]; then
-				echo yes
-			else
-				echo no
-			fi
-		fi
-	fi
-}
-
-DIR=/sys/devices/virtual/misc/test_firmware
-
-HAS_FW_LOADER_USER_HELPER=$(kconfig_has CONFIG_FW_LOADER_USER_HELPER=y)
-HAS_FW_LOADER_USER_HELPER_FALLBACK=$(kconfig_has CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y)
-
-if [ "$HAS_FW_LOADER_USER_HELPER" = "yes" ]; then
-       OLD_TIMEOUT=$(cat /sys/class/firmware/timeout)
-else
-	echo "usermode helper disabled so ignoring test"
-	exit 0
-fi
-
-FWPATH=$(mktemp -d)
-FW="$FWPATH/test-firmware.bin"
-
-test_finish()
-{
-	echo "$OLD_TIMEOUT" >/sys/class/firmware/timeout
-	rm -f "$FW"
-	rmdir "$FWPATH"
-}
+trap "test_finish" EXIT
 
 load_fw()
 {
