@@ -47,6 +47,35 @@ check_setup()
 {
 	HAS_FW_LOADER_USER_HELPER=$(kconfig_has CONFIG_FW_LOADER_USER_HELPER=y)
 	HAS_FW_LOADER_USER_HELPER_FALLBACK=$(kconfig_has CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y)
+	DEBUGFS_FW_IGNORE_SYSFS_FALLBACK="N"
+	DEBUGFS_FW_FORCE_SYSFS_FALLBACK="N"
+
+	if [ -z $DEBUGFS_DIR ]; then
+		DEBUGFS_DIR="/sys/kernel/debug/"
+	fi
+
+	FW_DEBUGFS="/sys/kernel/debug/firmware/"
+	FW_FORCE_SYSFS_FALLBACK="$FW_DEBUGFS/force_sysfs_fallback"
+	FW_IGNORE_SYSFS_FALLBACK="$FW_DEBUGFS/ignore_sysfs_fallback"
+	HAS_DEBUGFS="no"
+
+	if [ -f $FW_FORCE_SYSFS_FALLBACK ]; then
+		DEBUGFS_FW_FORCE_SYSFS_FALLBACK=$(cat $FW_FORCE_SYSFS_FALLBACK)
+	fi
+
+	if [ -f $FW_IGNORE_SYSFS_FALLBACK ]; then
+		DEBUGFS_FW_IGNORE_SYSFS_FALLBACK=$(cat $FW_IGNORE_SYSFS_FALLBACK)
+	fi
+
+	if [ "$DEBUGFS_FW_IGNORE_SYSFS_FALLBACK" = "Y" ]; then
+		HAS_FW_LOADER_USER_HELPER_FALLBACK="no"
+		HAS_FW_LOADER_USER_HELPER="no"
+	fi
+
+	if [ "$DEBUGFS_FW_FORCE_SYSFS_FALLBACK" = "Y" ]; then
+		HAS_FW_LOADER_USER_HELPER="yes"
+		HAS_FW_LOADER_USER_HELPER_FALLBACK="yes"
+	fi
 
 	if [ "$HAS_FW_LOADER_USER_HELPER" = "yes" ]; then
 	       OLD_TIMEOUT=$(cat /sys/class/firmware/timeout)
@@ -76,6 +105,30 @@ setup_tmp_file()
 	fi
 }
 
+debugfs_set_force_sysfs_fallback()
+{
+	if [ -f $FW_FORCE_SYSFS_FALLBACK ]; then
+		echo -n $1 > $FW_FORCE_SYSFS_FALLBACK
+		DEBUGFS_FW_FORCE_SYSFS_FALLBACK=$(cat $FW_FORCE_SYSFS_FALLBACK)
+		check_setup
+	fi
+}
+
+debugfs_set_ignore_sysfs_fallback()
+{
+	if [ -f $FW_IGNORE_SYSFS_FALLBACK ]; then
+		echo -n $1 > $FW_IGNORE_SYSFS_FALLBACK
+		DEBUGFS_FW_IGNORE_SYSFS_FALLBACK=$(cat $FW_IGNORE_SYSFS_FALLBACK)
+		check_setup
+	fi
+}
+
+debugfs_restore_defaults()
+{
+	debugfs_set_force_sysfs_fallback N
+	debugfs_set_ignore_sysfs_fallback N
+}
+
 test_finish()
 {
 	if [ "$HAS_FW_LOADER_USER_HELPER" = "yes" ]; then
@@ -93,6 +146,7 @@ test_finish()
 	if [ -d $FWPATH ]; then
 		rm -rf "$FWPATH"
 	fi
+	debugfs_restore_defaults
 }
 
 kconfig_has()
