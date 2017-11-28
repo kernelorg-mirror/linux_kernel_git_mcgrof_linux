@@ -1388,9 +1388,12 @@ static void sb_freeze_unlock(struct super_block *sb)
 }
 
 /* Caller takes lock and handles active count */
-static int freeze_locked_super(struct super_block *sb)
+static int freeze_locked_super(struct super_block *sb, bool usercall)
 {
 	int ret;
+
+	if (!usercall && sb_is_frozen(sb))
+		return 0;
 
 	if (sb_is_unfrozen(sb))
 		return -EBUSY;
@@ -1436,7 +1439,10 @@ static int freeze_locked_super(struct super_block *sb)
 	 * For debugging purposes so that fs can warn if it sees write activity
 	 * when frozen is set to SB_FREEZE_COMPLETE, and for thaw_super().
 	 */
-	sb->s_writers.frozen = SB_FREEZE_COMPLETE;
+	if (usercall)
+		sb->s_writers.frozen = SB_FREEZE_COMPLETE;
+	else
+		sb->s_writers.frozen = SB_FREEZE_COMPLETE_AUTO;
 	lockdep_sb_freeze_release(sb);
 	return 0;
 }
@@ -1481,7 +1487,7 @@ int freeze_super(struct super_block *sb)
 	atomic_inc(&sb->s_active);
 
 	down_write(&sb->s_umount);
-	error = freeze_locked_super(sb);
+	error = freeze_locked_super(sb, true);
 	if (error) {
 		deactivate_locked_super(sb);
 		goto out;
@@ -1494,9 +1500,12 @@ out:
 EXPORT_SYMBOL(freeze_super);
 
 /* Caller takes lock and handles active count */
-static int thaw_locked_super(struct super_block *sb)
+static int thaw_locked_super(struct super_block *sb, bool usercall)
 {
 	int error;
+
+	if (!usercall && sb_is_unfrozen(sb))
+		return 0;
 
 	if (!sb_is_frozen(sb))
 		return -EINVAL;
@@ -1536,7 +1545,7 @@ int thaw_super(struct super_block *sb)
 	int error;
 
 	down_write(&sb->s_umount);
-	error = thaw_locked_super(sb);
+	error = thaw_locked_super(sb, true);
 	if (error) {
 		up_write(&sb->s_umount);
 		goto out;
