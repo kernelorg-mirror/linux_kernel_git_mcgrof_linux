@@ -1392,7 +1392,7 @@ static int freeze_locked_super(struct super_block *sb)
 {
 	int ret;
 
-	if (sb->s_writers.frozen != SB_UNFROZEN)
+	if (!sb_is_unfrozen(sb))
 		return -EBUSY;
 
 	if (!(sb->s_flags & SB_BORN))
@@ -1498,7 +1498,7 @@ static int thaw_locked_super(struct super_block *sb)
 {
 	int error;
 
-	if (sb->s_writers.frozen != SB_FREEZE_COMPLETE)
+	if (!sb_is_frozen(sb))
 		return -EINVAL;
 
 	if (sb_rdonly(sb)) {
