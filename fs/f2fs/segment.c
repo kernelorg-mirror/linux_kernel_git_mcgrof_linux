@@ -1382,18 +1382,14 @@ static int issue_discard_thread(void *data)
 	unsigned int wait_ms = DEF_MIN_DISCARD_ISSUE_TIME;
 	int issued;
 
-	set_freezable();
-
 	do {
 		init_discard_policy(&dpolicy, DPOLICY_BG,
 					dcc->discard_granularity);
 
 		wait_event_interruptible_timeout(*q,
-				kthread_should_stop() || freezing(current) ||
+				kthread_should_stop() ||
 				dcc->discard_wake,
 				msecs_to_jiffies(wait_ms));
-		if (try_to_freeze())
-			continue;
 		if (kthread_should_stop())
 			return 0;
 
