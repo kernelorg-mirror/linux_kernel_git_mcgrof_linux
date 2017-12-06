@@ -28,12 +28,16 @@ static unsigned int one = 1;
  * 	as if one had enabled CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y.
  * 	Useful to help debug a CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y
  * 	functionality on a kernel where that config entry has been disabled.
+ * @ignore_sysfs_fallback: force to disable the sysfs fallback mechanism.
+ * 	This emulates the behaviour as if we had set the kernel
+ * 	config CONFIG_FW_LOADER_USER_HELPER=n.
  * @old_timeout: for internal use
  * @loading_timeout: the timeout to wait for the fallback mechanism before
  * 	giving up, in seconds.
  */
 struct firmware_fallback_config {
 	bool force_sysfs_fallback;
+	bool ignore_sysfs_fallback;
 	int old_timeout;
 	int loading_timeout;
 };
@@ -48,6 +52,15 @@ struct ctl_table firmware_config_table[] = {
 	{
 		.procname	= "force_sysfs_fallback",
 		.data		= &fw_fallback_config.force_sysfs_fallback,
+		.maxlen         = sizeof(unsigned int),
+		.mode           = 0644,
+		.proc_handler   = proc_douintvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{
+		.procname	= "ignore_sysfs_fallback",
+		.data		= &fw_fallback_config.ignore_sysfs_fallback,
 		.maxlen         = sizeof(unsigned int),
 		.mode           = 0644,
 		.proc_handler   = proc_douintvec_minmax,
@@ -682,6 +695,11 @@ static bool fw_force_sysfs_fallback(unsigned int opt_flags)
 
 static bool fw_run_sysfs_fallback(unsigned int opt_flags)
 {
+	if (fw_fallback_config.ignore_sysfs_fallback) {
+		pr_info_once("Ignoring firmware sysfs fallback due to debugfs knob\n");
+		return false;
+	}
+
 	if ((opt_flags & FW_OPT_NOFALLBACK))
 		return false;
 
