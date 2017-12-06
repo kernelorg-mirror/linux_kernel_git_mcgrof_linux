@@ -7,6 +7,7 @@
 #include <linux/security.h>
 #include <linux/highmem.h>
 #include <linux/umh.h>
+#include <linux/sysctl.h>
 
 #include "firmware_fallback.h"
 #include "firmware_loader.h"
