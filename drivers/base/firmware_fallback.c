@@ -7,6 +7,7 @@
 #include <linux/security.h>
 #include <linux/highmem.h>
 #include <linux/umh.h>
+#include <linux/sysctl.h>
 
 #include "firmware_fallback.h"
 #include "firmware_loader.h"
@@ -15,6 +16,9 @@
  * firmware fallback mechanism
  */
 
+static unsigned int zero;
+static unsigned int one = 1;
+
 /**
  * struct firmware_fallback_config - firmware fallback configuratioon settings
  *
@@ -22,12 +26,14 @@
  *
  * @force_sysfs_fallback: force the sysfs fallback mechanism to be used
  * 	as if one had enabled CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y.
+ * 	Useful to help debug a CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y
+ * 	functionality on a kernel where that config entry has been disabled.
  * @old_timeout: for internal use
  * @loading_timeout: the timeout to wait for the fallback mechanism before
  * 	giving up, in seconds.
  */
 struct firmware_fallback_config {
-	const bool force_sysfs_fallback;
+	bool force_sysfs_fallback;
 	int old_timeout;
 	int loading_timeout;
 };
@@ -36,6 +42,19 @@ static struct firmware_fallback_config fw_fallback_config = {
 	.force_sysfs_fallback = IS_ENABLED(CONFIG_FW_LOADER_USER_HELPER_FALLBACK),
 	.loading_timeout = 60,
 	.old_timeout = 60,
+};
+
+struct ctl_table firmware_config_table[] = {
+	{
+		.procname	= "force_sysfs_fallback",
+		.data		= &fw_fallback_config.force_sysfs_fallback,
+		.maxlen         = sizeof(unsigned int),
+		.mode           = 0644,
+		.proc_handler   = proc_douintvec_minmax,
+		.extra1		= &zero,
+		.extra2		= &one,
+	},
+	{ }
 };
 
 /* These getters are vetted to use int properly */
