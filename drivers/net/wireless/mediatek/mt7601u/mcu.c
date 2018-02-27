@@ -29,8 +29,10 @@
 #define MCU_FW_URB_SIZE			(MCU_FW_URB_MAX_PAYLOAD + 12)
 #define MCU_RESP_URB_SIZE		1024
 
-static inline bool firmware_running(struct mt7601u_dev *dev)
+static inline bool firmware_running(void *context)
 {
+	struct mt7601u_dev *dev = context;
+
 	return mt7601u_rr(dev, MT_MCU_COM_REG0) == 1;
 }
 
@@ -410,8 +412,9 @@ error:
 	return ret;
 }
 
-static int mt7601u_load_firmware(struct mt7601u_dev *dev)
+static int mt7601u_load_firmware(void *context)
 {
+	struct mt7601u_dev *dev = context;
 	const struct firmware *fw;
 	const struct mt76_fw_header *hdr;
 	int len, ret;
@@ -419,9 +422,6 @@ static int mt7601u_load_firmware(struct mt7601u_dev *dev)
 
 	mt7601u_wr(dev, MT_USB_DMA_CFG, (MT_USB_DMA_CFG_RX_BULK_EN |
 					 MT_USB_DMA_CFG_TX_BULK_EN));
-
-	if (firmware_running(dev))
-		return 0;
 
 	ret = request_firmware(&fw, MT7601U_FIRMWARE, dev->dev);
 	if (ret)
@@ -501,7 +501,8 @@ int mt7601u_mcu_init(struct mt7601u_dev *dev)
 
 	mutex_init(&dev->mcu.mutex);
 
-	ret = mt7601u_load_firmware(dev);
+	ret = request_firmware_load(dev->dev, MT7601U_FIRMWARE, dev,
+				    firmware_running, mt7601u_load_firmware);
 	if (ret)
 		return ret;
 
