@@ -85,4 +85,11 @@ static inline int request_firmware_into_buf(const struct firmware **firmware_p,
 }
 
 #endif
+
+int request_firmware_load(struct device *device,
+			  const char *name,
+			  void *context,
+			  bool (*driver_fw_running)(void *context),
+			  int (*driver_fw_load)(void *context));
+
 #endif

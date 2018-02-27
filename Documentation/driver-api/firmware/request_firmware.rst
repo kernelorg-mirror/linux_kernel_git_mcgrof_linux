@@ -44,6 +44,19 @@ request_firmware_nowait
 .. kernel-doc:: drivers/base/firmware_class.c
    :functions: request_firmware_nowait
 
+Special optimizations on reboot
+===============================
+
+Some devices have an optimization in place to enable the firmware to be
+retained during system reboot. When such optimizations are used the driver
+author must ensure the firmware is still available on resume from suspend,
+and request_firmware_load() can be used to help with that.
+
+request_firmware_load()
+-----------------------
+.. kernel-doc:: drivers/base/firmware_class.c
+   :functions: request_firmware_load
+
 request firmware API expected driver use
 ========================================
 

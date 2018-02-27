@@ -636,6 +636,59 @@ int request_firmware_direct(const struct firmware **firmware_p,
 EXPORT_SYMBOL_GPL(request_firmware_direct);
 
 /**
+ * request_firmware_cache: - cache firmware for suspend so resume can use it
+ * @name: name of firmware file
+ * @device: device for which firmware should be cached for
+ *
+ * There are some devices with an optimization that enables the device to not
+ * require loading firmware on system reboot. This optimization may still
+ * require the firmware present on resume from suspend. This routine can be
+ * used to ensure the firmware is present on resume from suspend in these
+ * situations. This helper is not compatible with drivers which use
+ * request_firmware_into_buf() or request_firmware_nowait() with no uevent set.
+ **/
+static int request_firmware_cache(struct device *device, const char *name)
+{
+	int ret;
+
+	mutex_lock(&fw_lock);
+	ret = fw_add_devm_name(device, name);
+	mutex_unlock(&fw_lock);
+
+	return ret;
+}
+
+/**
+ * request_firmware_load: - load firmware or cache it if needed
+ * @name: name of firmware file
+ * @device: device for which firmware should be loaded or cached for
+ * @context: private driver context
+ * @driver_fw_running: checks to see if the firmware is already loaded and
+ * 	running.
+ * @driver_fw_load: loads firmware for the driver.
+ *
+ * You often need to either load firmware or just cache it for resume from
+ * suspend. This helper enables you to do either for the device driver.
+ **/
+int request_firmware_load(struct device *device,
+			  const char *name,
+			  void *context,
+			  bool (*driver_fw_running)(void *context),
+			  int (*driver_fw_load)(void *context))
+{
+	int ret;
+
+	if (driver_fw_running(context))
+		ret = request_firmware_cache(device, name);
+	else
+		ret = driver_fw_load(context);
+
+	return ret;
+
+}
+EXPORT_SYMBOL_GPL(request_firmware_load);
+
+/**
  * request_firmware_into_buf - load firmware into a previously allocated buffer
  * @firmware_p: pointer to firmware image
  * @name: name of firmware file
