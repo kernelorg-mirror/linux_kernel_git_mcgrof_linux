@@ -29,7 +29,7 @@
 #define MCU_FW_URB_SIZE			(MCU_FW_URB_MAX_PAYLOAD + 12)
 #define MCU_RESP_URB_SIZE		1024
 
-static inline int firmware_running(struct mt7601u_dev *dev)
+static inline bool firmware_running(struct mt7601u_dev *dev)
 {
 	return mt7601u_rr(dev, MT_MCU_COM_REG0) == 1;
 }
