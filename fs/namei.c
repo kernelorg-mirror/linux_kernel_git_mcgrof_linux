@@ -2719,6 +2719,26 @@ int __check_sticky(struct inode *dir, struct inode *inode)
 }
 EXPORT_SYMBOL(__check_sticky);
 
+/* Process extra file attributes only when they make sense */
+static bool may_delete_stx_attributes(struct inode *inode)
+{
+	/*
+	 * The VFS does not allow setting append/immutable on symlinks.
+	 *
+	 * Filesystems can implement their own verifier which would avoid this
+	 * generic splat, this generic splat is desirable if the respective
+	 * filesystem repair utility won't implement a fix for this, otherwise
+	 * users end up with a nagging dangling file which is impossible to
+	 * fix in userspace.
+	 */
+	if (S_ISLNK(inode->i_mode)) {
+		WARN_ONCE((IS_APPEND(inode) || IS_IMMUTABLE(inode)),
+		 "Immutable or append flag set on symlink. VFS does not allow this, must be a filesystem corruption. Allowing deletion though");
+	} else if (IS_APPEND(inode) || IS_IMMUTABLE(inode))
+		return  false;
+	return  true;
+}
+
 /*
  *	Check whether we can remove a link victim from directory dir, check
  *  whether the type of victim is right.
@@ -2757,8 +2777,8 @@ static int may_delete(struct inode *dir, struct dentry *victim, bool isdir)
 	if (IS_APPEND(dir))
 		return -EPERM;
 
-	if (check_sticky(dir, inode) || IS_APPEND(inode) ||
-	    IS_IMMUTABLE(inode) || IS_SWAPFILE(inode) || HAS_UNMAPPED_ID(inode))
+	if (check_sticky(dir, inode) || !may_delete_stx_attributes(inode) ||
+	    IS_SWAPFILE(inode) || HAS_UNMAPPED_ID(inode))
 		return -EPERM;
 	if (isdir) {
 		if (!d_is_dir(victim))
