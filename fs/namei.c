@@ -2719,6 +2719,14 @@ int __check_sticky(struct inode *dir, struct inode *inode)
 }
 EXPORT_SYMBOL(__check_sticky);
 
+/* Process extra file attributes only when they make sense */
+static bool may_delete_stx_attributes(struct inode *inode)
+{
+	if (!S_ISLNK(inode->i_mode) && (IS_APPEND(inode) || IS_IMMUTABLE(inode)))
+		return false;
+	return  true;
+}
+
 /*
  *	Check whether we can remove a link victim from directory dir, check
  *  whether the type of victim is right.
@@ -2757,8 +2765,8 @@ static int may_delete(struct inode *dir, struct dentry *victim, bool isdir)
 	if (IS_APPEND(dir))
 		return -EPERM;
 
-	if (check_sticky(dir, inode) || IS_APPEND(inode) ||
-	    IS_IMMUTABLE(inode) || IS_SWAPFILE(inode) || HAS_UNMAPPED_ID(inode))
+	if (check_sticky(dir, inode) || !may_delete_stx_attributes(inode) ||
+	    IS_SWAPFILE(inode) || HAS_UNMAPPED_ID(inode))
 		return -EPERM;
 	if (isdir) {
 		if (!d_is_dir(victim))
