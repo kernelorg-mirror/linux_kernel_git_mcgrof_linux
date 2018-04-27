@@ -1083,6 +1083,20 @@ int phys_mem_access_prot_allowed(struct file *file, unsigned long pfn,
 static inline void init_espfix_bsp(void) { }
 #endif
 
+/*
+ * Some architectures don't have PAGE_KERNEL_RO. This is the best
+ * we can do for them buggers for now. Currently known to not have it:
+ *
+ *  o alpha
+ *  o m68k
+ *  o mips
+ *  o sparc64
+ *  o sparc
+ */
+#ifndef PAGE_KERNEL_RO
+#define PAGE_KERNEL_RO PAGE_KERNEL
+#endif
+
 #endif /* !__ASSEMBLY__ */
 
 #ifndef io_remap_pfn_range
