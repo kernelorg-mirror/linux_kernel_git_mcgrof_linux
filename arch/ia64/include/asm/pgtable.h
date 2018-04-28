@@ -23,7 +23,7 @@
 
 /*
  * First, define the various bits in a PTE.  Note that the PTE format
- * matches the VHPT short format, the firt doubleword of the VHPD long
+ * matches the VHPT short format, the first doubleword of the VHPD long
  * format, and the first doubleword of the TLB insertion format.
  */
 #define _PAGE_P_BIT		0
@@ -142,9 +142,11 @@
 #define PAGE_COPY_EXEC	__pgprot(__ACCESS_BITS | _PAGE_PL_3 | _PAGE_AR_RX)
 #define PAGE_GATE	__pgprot(__ACCESS_BITS | _PAGE_PL_0 | _PAGE_AR_X_RX)
 #define PAGE_KERNEL	__pgprot(__DIRTY_BITS  | _PAGE_PL_0 | _PAGE_AR_RWX)
-#define PAGE_KERNELRX	__pgprot(__ACCESS_BITS | _PAGE_PL_0 | _PAGE_AR_RX)
+#define PAGE_KERNEL_RO	__pgprot(__ACCESS_BITS | _PAGE_PL_0 | _PAGE_AR_R)
+#define PAGE_KERNEL_RX	__pgprot(__ACCESS_BITS | _PAGE_PL_0 | _PAGE_AR_RX)
 #define PAGE_KERNEL_UC	__pgprot(__DIRTY_BITS  | _PAGE_PL_0 | _PAGE_AR_RWX | \
 				 _PAGE_MA_UC)
+#define PAGE_KERNEL_EXEC	PAGE_KERNEL_RX
 
 # ifndef __ASSEMBLY__
 
