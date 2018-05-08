@@ -242,5 +242,10 @@ xfs_symlink_shortform_verify(
 	/* We /did/ null-terminate the buffer, right? */
 	if (*endp != 0)
 		return __this_address;
+
+	/* Immutable and append flags are not allowed on symlinks */
+	if (ip->i_d.di_flags & (XFS_DIFLAG_APPEND | XFS_DIFLAG_IMMUTABLE))
+		return __this_address;
+
 	return NULL;
 }
