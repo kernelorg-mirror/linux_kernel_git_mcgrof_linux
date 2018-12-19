@@ -3209,9 +3209,9 @@ static int pqi_alloc_operational_queues(struct pqi_ctrl_info *ctrl_info)
 	alloc_length += PQI_EXTRA_SGL_MEMORY;
 
 	ctrl_info->queue_memory_base =
-		dma_zalloc_coherent(&ctrl_info->pci_dev->dev,
-			alloc_length,
-			&ctrl_info->queue_memory_base_dma_handle, GFP_KERNEL);
+		dma_alloc_coherent(&ctrl_info->pci_dev->dev, alloc_length,
+				   &ctrl_info->queue_memory_base_dma_handle,
+				   GFP_KERNEL);
 
 	if (!ctrl_info->queue_memory_base)
 		return -ENOMEM;
@@ -3348,10 +3348,9 @@ static int pqi_alloc_admin_queues(struct pqi_ctrl_info *ctrl_info)
 		PQI_QUEUE_ELEMENT_ARRAY_ALIGNMENT;
 
 	ctrl_info->admin_queue_memory_base =
-		dma_zalloc_coherent(&ctrl_info->pci_dev->dev,
-			alloc_length,
-			&ctrl_info->admin_queue_memory_base_dma_handle,
-			GFP_KERNEL);
+		dma_alloc_coherent(&ctrl_info->pci_dev->dev, alloc_length,
+				   &ctrl_info->admin_queue_memory_base_dma_handle,
+				   GFP_KERNEL);
 
 	if (!ctrl_info->admin_queue_memory_base)
 		return -ENOMEM;
@@ -4235,9 +4234,10 @@ static void pqi_free_all_io_requests(struct pqi_ctrl_info *ctrl_info)
 
 static inline int pqi_alloc_error_buffer(struct pqi_ctrl_info *ctrl_info)
 {
-	ctrl_info->error_buffer = dma_zalloc_coherent(&ctrl_info->pci_dev->dev,
-		ctrl_info->error_buffer_length,
-		&ctrl_info->error_buffer_dma_handle, GFP_KERNEL);
+	ctrl_info->error_buffer = dma_alloc_coherent(&ctrl_info->pci_dev->dev,
+						     ctrl_info->error_buffer_length,
+						     &ctrl_info->error_buffer_dma_handle,
+						     GFP_KERNEL);
 
 	if (!ctrl_info->error_buffer)
 		return -ENOMEM;

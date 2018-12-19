@@ -3406,19 +3406,19 @@ static int bnxt_alloc_stats(struct bnxt *bp)
 			return 0;
 
 		bp->hw_rx_port_stats_ext =
-			dma_zalloc_coherent(&pdev->dev,
-					    sizeof(struct rx_port_stats_ext),
-					    &bp->hw_rx_port_stats_ext_map,
-					    GFP_KERNEL);
+			dma_alloc_coherent(&pdev->dev,
+					   sizeof(struct rx_port_stats_ext),
+					   &bp->hw_rx_port_stats_ext_map,
+					   GFP_KERNEL);
 		if (!bp->hw_rx_port_stats_ext)
 			return 0;
 
 		if (bp->hwrm_spec_code >= 0x10902) {
 			bp->hw_tx_port_stats_ext =
-				dma_zalloc_coherent(&pdev->dev,
-					    sizeof(struct tx_port_stats_ext),
-					    &bp->hw_tx_port_stats_ext_map,
-					    GFP_KERNEL);
+				dma_alloc_coherent(&pdev->dev,
+						   sizeof(struct tx_port_stats_ext),
+						   &bp->hw_tx_port_stats_ext_map,
+						   GFP_KERNEL);
 		}
 		bp->flags |= BNXT_FLAG_PORT_STATS_EXT;
 	}
