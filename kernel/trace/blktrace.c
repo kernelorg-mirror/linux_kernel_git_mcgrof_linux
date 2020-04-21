@@ -3,6 +3,9 @@
  * Copyright (C) 2006 Jens Axboe <axboe@kernel.dk>
  *
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <linux/blkdev.h>
 #include <linux/blktrace_api.h>
@@ -493,6 +496,16 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 	strreplace(buts->name, '/', '_');
 
 	/*
+	 * bdev can be NULL, as with scsi-generic, this is as helpful as
+	 * we can be.
+	 */
+	if (q->blk_trace) {
+		pr_warn("Concurrent blktraces are not allowed on %s\n",
+			buts->name);
+		return -EBUSY;
+	}
+
+	/*
 	 * We also have to use a partition directory if a partition is
 	 * being worked on, even though the same request_queue is shared.
 	 */
@@ -522,6 +535,10 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 	}
 
 	/*
+	 * For queues that do not have a gendisk attached to them, the debugfs
+	 * directory will not have been created at setup time.  Create it here
+	 * lazily, it will only be removed when the queue is torn down.
+	 *
 	 * As blktrace relies on debugfs for its interface the debugfs directory
 	 * is required, contrary to the usual mantra of not checking for debugfs
 	 * files or directories.
