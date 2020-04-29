@@ -804,6 +804,12 @@ static void __device_add_disk(struct device *parent, struct gendisk *disk,
 	int retval;
 
 	/*
+	 * Take an extra ref on queue which will be put on disk_release()
+	 * so that it sticks around as long as @disk is there.
+	 */
+	WARN_ON_ONCE(!blk_get_queue(disk->queue));
+
+	/*
 	 * The disk queue should now be all set with enough information about
 	 * the device for the elevator code to pick an adequate default
 	 * elevator if one is needed, that is, for devices requesting queue
@@ -853,12 +859,6 @@ static void __device_add_disk(struct device *parent, struct gendisk *disk,
 	register_disk(parent, disk, groups);
 	if (register_queue)
 		blk_register_queue(disk);
-
-	/*
-	 * Take an extra ref on queue which will be put on disk_release()
-	 * so that it sticks around as long as @disk is there.
-	 */
-	WARN_ON_ONCE(!blk_get_queue(disk->queue));
 
 	disk_add_events(disk);
 	blk_integrity_add(disk);
