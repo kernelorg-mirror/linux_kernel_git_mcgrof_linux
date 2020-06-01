@@ -86,6 +86,7 @@ struct hd_struct {
 #endif
 	struct percpu_ref ref;
 	struct rcu_work rcu_work;
+	struct dentry *debugfs_dir;
 };
 
 /**
