@@ -158,6 +158,7 @@ typedef struct sg_device { /* holds the state of each scsi generic device */
 	struct scsi_device *device;
 	wait_queue_head_t open_wait;    /* queue open() when O_EXCL present */
 	struct mutex open_rel_lock;     /* held when in open() or release() */
+	bool blktrace_initialized; /* when blktrace is ready */
 	int sg_tablesize;	/* adapter's max scatter-gather table size */
 	u32 index;		/* device index number */
 	struct list_head sfds;
@@ -1117,6 +1118,13 @@ sg_ioctl_common(struct file *filp, Sg_device *sdp, Sg_fd *sfp,
 		return put_user(max_sectors_bytes(sdp->device->request_queue),
 				ip);
 	case BLKTRACESETUP:
+		mutex_lock(&sdp->open_rel_lock);
+		if (!sdp->blktrace_initialized) {
+			blk_sg_debugfs_init(sdp->device->request_queue,
+					    sdp->disk->disk_name);
+			sdp->blktrace_initialized = true;
+		}
+		mutex_unlock(&sdp->open_rel_lock);
 		return blk_trace_setup(sdp->device->request_queue,
 				       sdp->disk->disk_name,
 				       MKDEV(SCSI_GENERIC_MAJOR, sdp->index),

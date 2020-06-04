@@ -311,7 +311,6 @@ static void blk_trace_free(struct blk_trace *bt)
 	debugfs_remove(bt->msg_file);
 	debugfs_remove(bt->dropped_file);
 	relay_close(bt->rchan);
-	debugfs_remove(bt->dir);
 	free_percpu(bt->sequence);
 	free_percpu(bt->msg_data);
 	kfree(bt);
@@ -482,9 +481,6 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 	if (!buts->buf_size || !buts->buf_nr)
 		return -EINVAL;
 
-	if (!blk_debugfs_root)
-		return -ENOENT;
-
 	strncpy(buts->name, name, BLKTRACE_BDEV_SIZE);
 	buts->name[BLKTRACE_BDEV_SIZE - 1] = '\0';
 
@@ -493,6 +489,46 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 	 * to underscores for this to work as expected
 	 */
 	strreplace(buts->name, '/', '_');
+
+	/*
+	 * We also have to use a partition directory if a partition is
+	 * being worked on, even though the same request_queue is shared.
+	 */
+	if (bdev && bdev != bdev->bd_contains) {
+		dir = bdev->bd_part->debugfs_dir;
+#if defined(CONFIG_CHR_DEV_SG) || defined(CONFIG_CHR_DEV_SG_MODULE)
+	} else if (q->sg_debugfs_dir &&
+		   strlen(buts->name) == strlen(q->sg_debugfs_dir->d_name.name)
+		   && strcmp(buts->name, q->sg_debugfs_dir->d_name.name) == 0) {
+		/* scsi-generic requires use of its own directory */
+		dir = q->sg_debugfs_dir;
+#endif
+	} else {
+		/*
+		 * For queues that do not have a gendisk attached to them, that
+		 * is those which do not use *add_disk*() or similar, the
+		 * debugfs directory will not have been created at setup time.
+		 * This is the case for scsi-generic drivers.  Create it here
+		 * lazily, it will only be removed when the queue is torn down.
+		 */
+		if (!q->debugfs_dir) {
+			q->debugfs_dir =
+				debugfs_create_dir(buts->name,
+						   blk_debugfs_root);
+		}
+		dir = q->debugfs_dir;
+	}
+
+	/*
+	 * As blktrace relies on debugfs for its interface the debugfs directory
+	 * is required, contrary to the usual mantra of not checking for debugfs
+	 * files or directories.
+	 */
+	if (IS_ERR_OR_NULL(dir)) {
+		pr_warn("debugfs_dir not present for %s so skipping\n",
+			buts->name);
+		return -ENOENT;
+	}
 
 	bt = kzalloc(sizeof(*bt), GFP_KERNEL);
 	if (!bt)
@@ -506,12 +542,6 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 	bt->msg_data = __alloc_percpu(BLK_TN_MAX_MSG, __alignof__(char));
 	if (!bt->msg_data)
 		goto err;
-
-	ret = -ENOENT;
-
-	dir = debugfs_lookup(buts->name, blk_debugfs_root);
-	if (!dir)
-		bt->dir = dir = debugfs_create_dir(buts->name, blk_debugfs_root);
 
 	bt->dev = dev;
 	atomic_set(&bt->dropped, 0);
@@ -551,8 +581,6 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 
 	ret = 0;
 err:
-	if (dir && !bt->dir)
-		dput(dir);
 	if (ret)
 		blk_trace_free(bt);
 	return ret;
