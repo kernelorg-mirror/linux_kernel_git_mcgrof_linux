@@ -314,7 +314,6 @@ static void blk_trace_free(struct blk_trace *bt)
 	debugfs_remove(bt->msg_file);
 	debugfs_remove(bt->dropped_file);
 	relay_close(bt->rchan);
-	debugfs_remove(bt->dir);
 	free_percpu(bt->sequence);
 	free_percpu(bt->msg_data);
 	kfree(bt);
@@ -488,9 +487,6 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 	if (!buts->buf_size || !buts->buf_nr)
 		return -EINVAL;
 
-	if (!blk_debugfs_root)
-		return -ENOENT;
-
 	strncpy(buts->name, name, BLKTRACE_BDEV_SIZE);
 	buts->name[BLKTRACE_BDEV_SIZE - 1] = '\0';
 
@@ -509,6 +505,44 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 		pr_warn("Concurrent blktraces are not allowed on %s\n",
 			buts->name);
 		return -EBUSY;
+	/*
+	 * We have to use a partition directory if a partition is being worked
+	 * on. The same request_queue is shared between all partitions.
+	 */
+	if (bdev && bdev != bdev->bd_contains) {
+		dir = bdev->bd_part->debugfs_dir;
+	} else if (IS_ENABLED(CONFIG_CHR_DEV_SG) &&
+		   MAJOR(dev) == SCSI_GENERIC_MAJOR) {
+		/*
+		 * scsi-generic exposes the request_queue through the /dev/sg*
+		 * interface but since that uses a different path than whatever
+		 * the respective scsi driver exposes we have a dedicated
+		 * dentry for it.
+		 */
+		dir = q->sg_debugfs_dir;
+	} else {
+		/*
+		 * Drivers which do not use the *add_disk*() interfaces will
+		 * not have their debugfs_dir created for them automatically,
+		 * so we must create it for them.
+		 */
+		if (!q->debugfs_dir) {
+			q->debugfs_dir =
+				debugfs_create_dir(buts->name,
+						   blk_debugfs_root);
+		}
+		dir = q->debugfs_dir;
+	}
+
+	/*
+	 * As blktrace relies on debugfs for its interface the debugfs directory
+	 * is required, contrary to the usual mantra of not checking for debugfs
+	 * files or directories.
+	 */
+	if (IS_ERR_OR_NULL(dir)) {
+		pr_warn("debugfs_dir not present for %s so skipping\n",
+			buts->name);
+		return -ENOENT;
 	}
 
 	bt = kzalloc(sizeof(*bt), GFP_KERNEL);
@@ -523,12 +557,6 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 	bt->msg_data = __alloc_percpu(BLK_TN_MAX_MSG, __alignof__(char));
 	if (!bt->msg_data)
 		goto err;
-
-	ret = -ENOENT;
-
-	dir = debugfs_lookup(buts->name, blk_debugfs_root);
-	if (!dir)
-		bt->dir = dir = debugfs_create_dir(buts->name, blk_debugfs_root);
 
 	bt->dev = dev;
 	atomic_set(&bt->dropped, 0);
@@ -565,8 +593,6 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 
 	ret = 0;
 err:
-	if (dir && !bt->dir)
-		dput(dir);
 	if (ret)
 		blk_trace_free(bt);
 	return ret;

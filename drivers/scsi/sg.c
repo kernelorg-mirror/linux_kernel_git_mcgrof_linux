@@ -1117,6 +1117,9 @@ sg_ioctl_common(struct file *filp, Sg_device *sdp, Sg_fd *sfp,
 		return put_user(max_sectors_bytes(sdp->device->request_queue),
 				ip);
 	case BLKTRACESETUP:
+		if (!sdp->device->request_queue->sg_debugfs_dir)
+			blk_sg_debugfs_init(sdp->device->request_queue,
+					    sdp->disk->disk_name);
 		return blk_trace_setup(sdp->device->request_queue,
 				       sdp->disk->disk_name,
 				       MKDEV(SCSI_GENERIC_MAJOR, sdp->index),
