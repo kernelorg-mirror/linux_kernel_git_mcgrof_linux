@@ -10,6 +10,7 @@
 #include <linux/vmalloc.h>
 #include <linux/blktrace_api.h>
 #include <linux/raid/detect.h>
+#include <linux/debugfs.h>
 #include "check.h"
 
 static int (*check_part[])(struct parsed_partitions *) = {
@@ -312,6 +313,7 @@ void delete_partition(struct gendisk *disk, int partno)
 	rcu_assign_pointer(ptbl->part[partno], NULL);
 	rcu_assign_pointer(ptbl->last_lookup, NULL);
 	kobject_put(part->holder_dir);
+	debugfs_remove_recursive(part->debugfs_dir);
 	device_del(part_to_dev(part));
 
 	/*
@@ -433,6 +435,7 @@ struct hd_struct *add_partition(struct gendisk *disk, int partno,
 	if (!p->holder_dir)
 		goto out_del;
 
+	p->debugfs_dir = debugfs_create_dir(dev_name(pdev), blk_debugfs_root);
 	dev_set_uevent_suppress(pdev, 0);
 	if (flags & ADDPART_FLAG_WHOLEDISK) {
 		err = device_create_file(pdev, &dev_attr_whole_disk);

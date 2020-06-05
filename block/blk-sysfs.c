@@ -11,6 +11,7 @@
 #include <linux/blktrace_api.h>
 #include <linux/blk-mq.h>
 #include <linux/blk-cgroup.h>
+#include <linux/debugfs.h>
 
 #include "blk.h"
 #include "blk-mq.h"
@@ -905,6 +906,9 @@ static void blk_release_queue(struct kobject *kobj)
 
 	blk_trace_shutdown(q);
 
+	debugfs_remove_recursive(q->debugfs_dir);
+	if (IS_ENABLED(CONFIG_CHR_DEV_SG))
+		debugfs_remove_recursive(q->sg_debugfs_dir);
 	if (queue_is_mq(q))
 		blk_mq_debugfs_unregister(q);
 
@@ -923,6 +927,20 @@ struct kobj_type blk_queue_ktype = {
 	.sysfs_ops	= &queue_sysfs_ops,
 	.release	= blk_release_queue,
 };
+
+/**
+ * blk_sg_debugfs_init - initialize debugfs for scsi-generic
+ * @q: the associated queue
+ * @name: name of the scsi-generic device
+ *
+ * To be used by scsi-generic for allowing it to use blktrace.
+ */
+void blk_sg_debugfs_init(struct request_queue *q, const char *name)
+{
+	if (IS_ENABLED(CONFIG_CHR_DEV_SG))
+		q->sg_debugfs_dir = debugfs_create_dir(name, blk_debugfs_root);
+}
+EXPORT_SYMBOL_GPL(blk_sg_debugfs_init);
 
 /**
  * blk_register_queue - register a block layer queue with sysfs
@@ -975,6 +993,28 @@ int blk_register_queue(struct gendisk *disk)
 		kobject_put(&dev->kobj);
 		goto unlock;
 	}
+
+	/*
+	 * Blktrace needs a debugfs name even for queues that don't register
+	 * a gendisk, so it lazily registers the debugfs directory.  But that
+	 * can get us into a situation where a SCSI device is found, with no
+	 * driver for it (yet).  Then blktrace is used on the device, creating
+	 * the debugfs directory, and only after that a driver is loaded. In
+	 * that case we might already have a debugfs directory registered here.
+	 * Even worse we could be racing with blktrace to register it.
+	 */
+#ifdef CONFIG_BLK_DEV_IO_TRACE
+	mutex_lock(&q->blk_trace_mutex);
+	if (!q->debugfs_dir) {
+		q->debugfs_dir =
+			debugfs_create_dir(kobject_name(q->kobj.parent),
+				blk_debugfs_root);
+	}
+	mutex_unlock(&q->blk_trace_mutex);
+#else
+	q->debugfs_dir = debugfs_create_dir(kobject_name(q->kobj.parent),
+					    blk_debugfs_root);
+#endif
 
 	if (queue_is_mq(q)) {
 		__blk_mq_register_dev(dev, q);
