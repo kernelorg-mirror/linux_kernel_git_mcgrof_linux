@@ -488,9 +488,6 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 	if (!buts->buf_size || !buts->buf_nr)
 		return -EINVAL;
 
-	if (!blk_debugfs_root)
-		return -ENOENT;
-
 	strncpy(buts->name, name, BLKTRACE_BDEV_SIZE);
 	buts->name[BLKTRACE_BDEV_SIZE - 1] = '\0';
 
@@ -515,6 +512,32 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 	if (!bt)
 		return -ENOMEM;
 
+	/*
+	 * If we're working on a partition or scsi-generic devices, the
+	 * respective debugfs directory is not created for them on init, and so
+	 * we must create it for them. This is only used for blktrace purposes
+	 * for the lifetime of the blktrace.
+	 */
+	if ((bdev && bdev != bdev->bd_contains) || unlikely(!bdev)) {
+		dir = debugfs_create_dir(buts->name, blk_debugfs_root);
+		bt->dir = dir;
+	} else {
+		dir = q->debugfs_dir;
+	}
+
+	/*
+	 * As blktrace relies on debugfs for its interface the debugfs directory
+	 * is required, contrary to the usual mantra of not checking for debugfs
+	 * files or directories.
+	 */
+	if (IS_ERR_OR_NULL(dir)) {
+		pr_warn("debugfs_dir not present for %s so skipping\n",
+			buts->name);
+		ret = -ENOENT;
+		goto err;
+	}
+
+
 	ret = -ENOMEM;
 	bt->sequence = alloc_percpu(unsigned long);
 	if (!bt->sequence)
@@ -523,12 +546,6 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 	bt->msg_data = __alloc_percpu(BLK_TN_MAX_MSG, __alignof__(char));
 	if (!bt->msg_data)
 		goto err;
-
-	ret = -ENOENT;
-
-	dir = debugfs_lookup(buts->name, blk_debugfs_root);
-	if (!dir)
-		bt->dir = dir = debugfs_create_dir(buts->name, blk_debugfs_root);
 
 	bt->dev = dev;
 	atomic_set(&bt->dropped, 0);
@@ -565,8 +582,6 @@ static int do_blk_trace_setup(struct request_queue *q, char *name, dev_t dev,
 
 	ret = 0;
 err:
-	if (dir && !bt->dir)
-		dput(dir);
 	if (ret)
 		blk_trace_free(bt);
 	return ret;
