@@ -1729,14 +1729,13 @@ out:
 }
 EXPORT_SYMBOL(freeze_super);
 
-static int thaw_super_locked(struct super_block *sb)
+/* Caller deals with the sb->s_umount */
+static int __thaw_super_locked(struct super_block *sb)
 {
 	int error;
 
-	if (!sb_is_frozen(sb)) {
-		up_write(&sb->s_umount);
+	if (!sb_is_frozen(sb))
 		return -EINVAL;
-	}
 
 	if (sb_rdonly(sb)) {
 		sb->s_writers.frozen = SB_UNFROZEN;
@@ -1751,7 +1750,6 @@ static int thaw_super_locked(struct super_block *sb)
 			printk(KERN_ERR
 				"VFS:Filesystem thaw failed\n");
 			lockdep_sb_freeze_release(sb);
-			up_write(&sb->s_umount);
 			return error;
 		}
 	}
@@ -1760,9 +1758,24 @@ static int thaw_super_locked(struct super_block *sb)
 	sb_freeze_unlock(sb);
 out:
 	wake_up(&sb->s_writers.wait_unfrozen);
-	deactivate_locked_super(sb);
 	return 0;
 }
+
+/* Handles unlocking of sb->s_umount for you */
+static int thaw_super_locked(struct super_block *sb)
+{
+	int error;
+
+	error = __thaw_super_locked(sb);
+	if (error) {
+		up_write(&sb->s_umount);
+		return error;
+	}
+
+	deactivate_locked_super(sb);
+
+	return 0;
+ }
 
 /**
  * thaw_super -- unlock filesystem
