@@ -1727,14 +1727,12 @@ static int issue_discard_thread(void *data)
 	unsigned int wait_ms = DEF_MIN_DISCARD_ISSUE_TIME;
 	int issued;
 
-	set_freezable();
-
 	do {
 		__init_discard_policy(sbi, &dpolicy, DPOLICY_BG,
 					dcc->discard_granularity);
 
 		wait_event_interruptible_timeout(*q,
-				kthread_should_stop() || freezing(current) ||
+				kthread_should_stop() ||
 				dcc->discard_wake,
 				msecs_to_jiffies(wait_ms));
 
@@ -1745,8 +1743,6 @@ static int issue_discard_thread(void *data)
 		if (atomic_read(&dcc->queued_discard))
 			__wait_all_discard_cmd(sbi, NULL);
 
-		if (try_to_freeze())
-			continue;
 		if (f2fs_readonly(sbi->sb))
 			continue;
 		if (kthread_should_stop())
