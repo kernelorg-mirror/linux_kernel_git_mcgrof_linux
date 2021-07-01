@@ -2368,6 +2368,9 @@ config TEST_SYSFS
 	tristate "sysfs test driver"
 	depends on SYSFS
 	depends on NET
+	select FAULT_INJECTION
+	select FAULT_INJECTION_DEBUG_FS
+	select FAIL_KERNFS_KNOBS
 	help
 	  This builds the "test_sysfs" module. This driver enables to test the
 	  sysfs file system safely without affecting production knobs which
