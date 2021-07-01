@@ -28,6 +28,19 @@ Available fault injection capabilities
 
   injects kernel RPC client and server failures.
 
+- fail_kernfs_fop_write_iter
+
+  Allows for failures to be enabled inside kernfs_fop_write_iter(). Enabling
+  this does not immediately enable any errors to occur. You must configure
+  how you want this routine to fail or change behaviour by using the respective
+  debugfs knobs for it documented below under
+  /sys/kernel/debug/fail_kernfs/config_fail_kernfs_fop_write_iter/
+
+  If you enable CONFIG_FAULT_INJECTION_DEBUG_FS the fail_add_disk failure
+  injection parameters are placed under:
+
+  /sys/kernel/debug/kernfs/fail_kernfs_fop_write_iter/
+
 - fail_make_request
 
   injects disk IO errors on devices permitted by setting
@@ -154,6 +167,43 @@ configuration of fault-injection capabilities.
 
 	default is 'N', setting it to 'Y' will disable failure injections
 	when dealing with private (address space) futexes.
+
+- /sys/kernel/debug/fail_kernfs/sleep_after_wait_ms
+
+	Format: { digit-representing-milliseconds }
+
+  Configure how long to sleep in ms after a kernfs_debug_wait_completion
+  wait for completion. This completion is currently only used if any of the
+  waits are enabled under
+  /sys/kernel/debug/fail_kernfs/config_fail_kernfs_fop_write_iter/
+
+- /sys/kernel/debug/fail_kernfs/config_fail_kernfs_fop_write_iter/wait_after_active
+
+	Format: { 'Y' | 'N' }
+
+  Whether or not to issue a wait for completion after the kernfs_get_active()
+  completes on the kernfs_fop_write_iter() routine.
+
+- /sys/kernel/debug/fail_kernfs/config_fail_kernfs_fop_write_iter/wait_after_mutex
+
+	Format: { 'Y' | 'N' }
+
+  Whether or not to issue a wait for completion after the struct
+  kernfs_open_file mutex is taken on the routine kernfs_fop_write_iter().
+
+- /sys/kernel/debug/fail_kernfs/config_fail_kernfs_fop_write_iter/wait_at_start
+
+	Format: { 'Y' | 'N' }
+
+  Whether or not to issue a wait for completion after the very beginning of the
+  routine kernfs_fop_write_iter().
+
+- /sys/kernel/debug/fail_kernfs/config_fail_kernfs_fop_write_iter/wait_before_mutex
+
+	Format: { 'Y' | 'N' }
+
+  Whether or not to issue a wait for completion before the struct
+  kernfs_open_file mutex is taken on the routine kernfs_fop_write_iter().
 
 - /sys/kernel/debug/fail_sunrpc/ignore-client-disconnect:
 
