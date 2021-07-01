@@ -259,6 +259,8 @@ static ssize_t kernfs_fop_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 	const struct kernfs_ops *ops;
 	char *buf;
 
+	may_wait_kernfs_debug(kernfs_fop_write_iter, at_start);
+
 	if (of->atomic_write_len) {
 		if (len > of->atomic_write_len)
 			return -E2BIG;
@@ -280,16 +282,23 @@ static ssize_t kernfs_fop_write_iter(struct kiocb *iocb, struct iov_iter *iter)
 	}
 	buf[len] = '\0';	/* guarantee string termination */
 
+	may_wait_kernfs_debug(kernfs_fop_write_iter, before_mutex);
+
 	/*
 	 * @of->mutex nests outside active ref and is used both to ensure that
 	 * the ops aren't called concurrently for the same open file.
 	 */
 	mutex_lock(&of->mutex);
+
+	may_wait_kernfs_debug(kernfs_fop_write_iter, after_mutex);
+
 	if (!kernfs_get_active(of->kn)) {
 		mutex_unlock(&of->mutex);
 		len = -ENODEV;
 		goto out_free;
 	}
+
+	may_wait_kernfs_debug(kernfs_fop_write_iter, after_active);
 
 	ops = kernfs_ops(of->kn);
 	if (ops->write)
