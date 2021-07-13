@@ -184,6 +184,7 @@ struct floppy_state {
 
 	int		track;
 	int		ref_count;
+	bool registered;
 
 	struct gendisk *disk;
 	struct blk_mq_tag_set tag_set;
@@ -771,6 +772,25 @@ static const struct blk_mq_ops swim_mq_ops = {
 	.queue_rq = swim_queue_rq,
 };
 
+static void swim_del_disks(void)
+{
+	int drive;
+	struct floppy_state *fs;
+
+	for (drive = 0; drive < swd->floppy_count; drive++) {
+		fs = swd->unit[drive];
+		if (fs->disk) {
+			if (fw->registered)
+				del_gendisk(fs->disk);
+			blk_cleanup_disk(fs->disk);
+		}
+		if (fs->tag_set)
+			blk_mq_free_tag_set(&fs->tag_set);
+	}
+
+	unregister_blkdev(FLOPPY_MAJOR, "fd");
+}
+
 static int swim_floppy_init(struct swim_priv *swd)
 {
 	int err;
@@ -828,6 +848,7 @@ static int swim_floppy_init(struct swim_priv *swd)
 		swd->unit[drive].disk->private_data = &swd->unit[drive];
 		set_capacity(swd->unit[drive].disk, 2880);
 		add_disk(swd->unit[drive].disk);
+		swd->unit[drive].registered  true;
 	}
 
 	return 0;
@@ -909,14 +930,7 @@ static int swim_remove(struct platform_device *dev)
 	int drive;
 	struct resource *res;
 
-	for (drive = 0; drive < swd->floppy_count; drive++) {
-		del_gendisk(swd->unit[drive].disk);
-		blk_cleanup_queue(swd->unit[drive].disk->queue);
-		blk_mq_free_tag_set(&swd->unit[drive].tag_set);
-		put_disk(swd->unit[drive].disk);
-	}
-
-	unregister_blkdev(FLOPPY_MAJOR, "fd");
+	swim_del_disks();
 
 	/* eject floppies */
 
