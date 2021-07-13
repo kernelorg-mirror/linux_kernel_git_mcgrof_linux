@@ -847,22 +847,16 @@ static int swim_floppy_init(struct swim_priv *swd)
 		swd->unit[drive].disk->events = DISK_EVENT_MEDIA_CHANGE;
 		swd->unit[drive].disk->private_data = &swd->unit[drive];
 		set_capacity(swd->unit[drive].disk, 2880);
-		add_disk(swd->unit[drive].disk);
+		err = add_disk(swd->unit[drive].disk);
+		if (err)
+			goto exit_put_disks;
 		swd->unit[drive].registered  true;
 	}
 
 	return 0;
 
 exit_put_disks:
-	unregister_blkdev(FLOPPY_MAJOR, "fd");
-	do {
-		struct gendisk *disk = swd->unit[drive].disk;
-
-		if (!disk)
-			continue;
-		blk_cleanup_disk(disk);
-		blk_mq_free_tag_set(&swd->unit[drive].tag_set);
-	} while (drive--);
+	swim_del_disks();
 	return err;
 }
 
