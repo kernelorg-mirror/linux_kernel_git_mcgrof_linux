@@ -230,7 +230,8 @@ static const struct block_device_operations nd_blk_fops = {
 
 static void nd_blk_release_disk(void *disk)
 {
-	del_gendisk(disk);
+	if (disk->flags & GENHD_FL_UP)
+		del_gendisk(disk);
 	blk_cleanup_disk(disk);
 }
 
@@ -240,6 +241,7 @@ static int nsblk_attach_disk(struct nd_namespace_blk *nsblk)
 	resource_size_t available_disk_size;
 	struct gendisk *disk;
 	u64 internal_nlba;
+	int rc;
 
 	internal_nlba = div_u64(nsblk->size, nsblk_internal_lbasize(nsblk));
 	available_disk_size = internal_nlba * nsblk_sector_size(nsblk);
@@ -260,14 +262,16 @@ static int nsblk_attach_disk(struct nd_namespace_blk *nsblk)
 		return -ENOMEM;
 
 	if (nsblk_meta_size(nsblk)) {
-		int rc = nd_integrity_init(disk, nsblk_meta_size(nsblk));
+		rc = nd_integrity_init(disk, nsblk_meta_size(nsblk));
 
 		if (rc)
 			return rc;
 	}
 
 	set_capacity(disk, available_disk_size >> SECTOR_SHIFT);
-	device_add_disk(dev, disk, NULL);
+	rc = device_add_disk(dev, disk, NULL);
+	if (rc)
+		return rc;
 	nvdimm_check_and_set_ro(disk);
 	return 0;
 }
