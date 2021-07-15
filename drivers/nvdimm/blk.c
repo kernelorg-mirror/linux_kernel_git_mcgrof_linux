@@ -230,8 +230,7 @@ static const struct block_device_operations nd_blk_fops = {
 
 static void nd_blk_release_disk(void *disk)
 {
-	if (disk->flags & GENHD_FL_UP)
-		del_gendisk(disk);
+	del_gendisk(disk);
 	blk_cleanup_disk(disk);
 }
 
