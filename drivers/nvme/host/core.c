@@ -3721,6 +3721,7 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid,
 	struct gendisk *disk;
 	struct nvme_id_ns *id;
 	int node = ctrl->numa_node;
+	int rc;
 
 	if (nvme_identify_ns(ctrl, nsid, ids, &id))
 		return;
@@ -3770,7 +3771,9 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, unsigned nsid,
 		}
 	}
 
-	device_add_disk(ctrl->device, ns->disk, nvme_ns_id_attr_groups);
+	rc = device_add_disk(ctrl->device, ns->disk, nvme_ns_id_attr_groups);
+	if (rc)
+		goto out_unlink_ns;
 
 	down_write(&ctrl->namespaces_rwsem);
 	list_add_tail(&ns->list, &ctrl->namespaces);
