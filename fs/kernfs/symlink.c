@@ -36,7 +36,8 @@ struct kernfs_node *kernfs_create_link(struct kernfs_node *parent,
 		gid = target->iattr->ia_gid;
 	}
 
-	kn = kernfs_new_node(parent, name, S_IFLNK|S_IRWXUGO, uid, gid,
+	kn = kernfs_new_node(parent, name, S_IFLNK|S_IRWXUGO,
+			     target->owner, uid, gid,
 			     KERNFS_LINK);
 	if (!kn)
 		return ERR_PTR(-ENOMEM);

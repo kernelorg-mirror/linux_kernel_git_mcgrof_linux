@@ -113,6 +113,7 @@ void kernfs_put_active(struct kernfs_node *kn);
 int kernfs_add_one(struct kernfs_node *kn);
 struct kernfs_node *kernfs_new_node(struct kernfs_node *parent,
 				    const char *name, umode_t mode,
+				    struct module *owner,
 				    kuid_t uid, kgid_t gid,
 				    unsigned flags);
 

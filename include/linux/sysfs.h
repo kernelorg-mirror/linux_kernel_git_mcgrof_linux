@@ -30,6 +30,7 @@ enum kobj_ns_type;
 struct attribute {
 	const char		*name;
 	umode_t			mode;
+	struct module           *owner;
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 	bool			ignore_lockdep:1;
 	struct lock_class_key	*key;
@@ -80,6 +81,7 @@ do {							\
  * @attrs:	Pointer to NULL terminated list of attributes.
  * @bin_attrs:	Pointer to NULL terminated list of binary attributes.
  *		Either attrs or bin_attrs or both must be provided.
+ * @module:	If set, module responsible for this attribute group
  */
 struct attribute_group {
 	const char		*name;
@@ -89,6 +91,7 @@ struct attribute_group {
 						  struct bin_attribute *, int);
 	struct attribute	**attrs;
 	struct bin_attribute	**bin_attrs;
+	struct module           *owner;
 };
 
 /*
@@ -100,38 +103,52 @@ struct attribute_group {
 
 #define __ATTR(_name, _mode, _show, _store) {				\
 	.attr = {.name = __stringify(_name),				\
-		 .mode = VERIFY_OCTAL_PERMISSIONS(_mode) },		\
+		 .mode = VERIFY_OCTAL_PERMISSIONS(_mode),               \
+	         .owner  = THIS_MODULE,                                 \
+         },                                                             \
 	.show	= _show,						\
 	.store	= _store,						\
 }
 
 #define __ATTR_PREALLOC(_name, _mode, _show, _store) {			\
 	.attr = {.name = __stringify(_name),				\
-		 .mode = SYSFS_PREALLOC | VERIFY_OCTAL_PERMISSIONS(_mode) },\
+		 .mode = SYSFS_PREALLOC | VERIFY_OCTAL_PERMISSIONS(_mode),\
+	         .owner  = THIS_MODULE,                                 \
+        },                                                              \
 	.show	= _show,						\
 	.store	= _store,						\
 }
 
 #define __ATTR_RO(_name) {						\
-	.attr	= { .name = __stringify(_name), .mode = 0444 },		\
+	.attr	= { .name = __stringify(_name),                         \
+                    .mode = 0444,		                        \
+	            .owner  = THIS_MODULE,                              \
+                 },                                                     \
 	.show	= _name##_show,						\
 }
 
 #define __ATTR_RO_MODE(_name, _mode) {					\
 	.attr	= { .name = __stringify(_name),				\
-		    .mode = VERIFY_OCTAL_PERMISSIONS(_mode) },		\
+		    .mode = VERIFY_OCTAL_PERMISSIONS(_mode),            \
+	            .owner  = THIS_MODULE,                              \
+        },                                                              \
 	.show	= _name##_show,						\
 }
 
 #define __ATTR_RW_MODE(_name, _mode) {					\
 	.attr	= { .name = __stringify(_name),				\
-		    .mode = VERIFY_OCTAL_PERMISSIONS(_mode) },		\
+		    .mode = VERIFY_OCTAL_PERMISSIONS(_mode),            \
+	            .owner  = THIS_MODULE,                              \
+        },                                                              \
 	.show	= _name##_show,						\
 	.store	= _name##_store,					\
 }
 
 #define __ATTR_WO(_name) {						\
-	.attr	= { .name = __stringify(_name), .mode = 0200 },		\
+	.attr	= { .name = __stringify(_name),                         \
+                    .mode = 0200,                                       \
+	            .owner  = THIS_MODULE,                              \
+        },                                                              \
 	.store	= _name##_store,					\
 }
 
@@ -141,8 +158,11 @@ struct attribute_group {
 
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 #define __ATTR_IGNORE_LOCKDEP(_name, _mode, _show, _store) {	\
-	.attr = {.name = __stringify(_name), .mode = _mode,	\
-			.ignore_lockdep = true },		\
+	.attr = {.name = __stringify(_name),                    \
+                 .mode = _mode,                                 \
+                 .ignore_lockdep = true,                        \
+	         .owner  = THIS_MODULE,                         \
+        },		\
 	.show		= _show,				\
 	.store		= _store,				\
 }
@@ -159,6 +179,7 @@ static const struct attribute_group *_name##_groups[] = {	\
 #define ATTRIBUTE_GROUPS(_name)					\
 static const struct attribute_group _name##_group = {		\
 	.attrs = _name##_attrs,					\
+	.owner = THIS_MODULE,					\
 };								\
 __ATTRIBUTE_GROUPS(_name)
 
@@ -199,20 +220,29 @@ struct bin_attribute {
 
 /* macros to create static binary attributes easier */
 #define __BIN_ATTR(_name, _mode, _read, _write, _size) {		\
-	.attr = { .name = __stringify(_name), .mode = _mode },		\
+	.attr = { .name = __stringify(_name),                           \
+                   .mode = _mode,                                       \
+	           .owner = THIS_MODULE,                                \
+        },                                                              \
 	.read	= _read,						\
 	.write	= _write,						\
 	.size	= _size,						\
 }
 
 #define __BIN_ATTR_RO(_name, _size) {					\
-	.attr	= { .name = __stringify(_name), .mode = 0444 },		\
+	.attr	= { .name = __stringify(_name),                         \
+                    .mode = 0444,                                       \
+	            .owner = THIS_MODULE,                               \
+        },                                                              \
 	.read	= _name##_read,						\
 	.size	= _size,						\
 }
 
 #define __BIN_ATTR_WO(_name, _size) {					\
-	.attr	= { .name = __stringify(_name), .mode = 0200 },		\
+	.attr	= { .name = __stringify(_name),                         \
+                    .mode = 0200,                                       \
+	            .owner = THIS_MODULE,                               \
+        },                                                              \
 	.write	= _name##_write,					\
 	.size	= _size,						\
 }
