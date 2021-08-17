@@ -2077,15 +2077,21 @@ int dm_setup_md_queue(struct mapped_device *md, struct dm_table *t)
 	if (r)
 		return r;
 
-	add_disk(md->disk);
+	r = add_disk(md->disk);
+	if (r)
+		goto out_cleanup_disk;
 
 	r = dm_sysfs_init(md);
-	if (r) {
-		del_gendisk(md->disk);
-		return r;
-	}
+	if (r)
+		goto out_del_gendisk;
 	md->type = type;
 	return 0;
+
+out_cleanup_disk:
+	blk_cleanup_disk(md->disk);
+out_del_gendisk:
+	del_gendisk(md->disk);
+	return r;
 }
 
 struct mapped_device *dm_get_md(dev_t dev)
