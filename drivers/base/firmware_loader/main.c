@@ -1105,11 +1105,11 @@ static void request_firmware_work_func(struct work_struct *work)
 	_request_firmware(&fw, fw_work->name, fw_work->device, NULL, 0, 0,
 			  fw_work->opt_flags);
 	fw_work->cont(fw, fw_work->context);
-	put_device(fw_work->device); /* taken in request_firmware_nowait() */
 
 	module_put(fw_work->module);
 	kfree_const(fw_work->name);
 	kfree(fw_work);
+	put_device(fw_work->device); /* taken in request_firmware_nowait() */
 }
 
 /**
@@ -1142,18 +1142,20 @@ request_firmware_nowait(
 	const char *name, struct device *device, gfp_t gfp, void *context,
 	void (*cont)(const struct firmware *fw, void *context))
 {
+	int err = -ENOMEM;
 	struct firmware_work *fw_work;
+
+	if (WARN_ON(!get_device(device)))
+		return -ENODEV;
 
 	fw_work = kzalloc(sizeof(struct firmware_work), gfp);
 	if (!fw_work)
-		return -ENOMEM;
+		goto err_out;
 
 	fw_work->module = module;
 	fw_work->name = kstrdup_const(name, gfp);
-	if (!fw_work->name) {
-		kfree(fw_work);
-		return -ENOMEM;
-	}
+	if (!fw_work->name)
+		goto err_out_free_work;
 	fw_work->device = device;
 	fw_work->context = context;
 	fw_work->cont = cont;
@@ -1161,26 +1163,26 @@ request_firmware_nowait(
 		(uevent ? FW_OPT_UEVENT : FW_OPT_USERHELPER);
 
 	if (!uevent && fw_cache_is_setup(device, name)) {
-		kfree_const(fw_work->name);
-		kfree(fw_work);
-		return -EOPNOTSUPP;
+		err = -EOPNOTSUPP;
+		goto err_out_free_name;
 	}
 
 	if (!try_module_get(module)) {
-		kfree_const(fw_work->name);
-		kfree(fw_work);
-		return -EFAULT;
+		err = -EFAULT;
+		goto err_out_free_name;
 	}
 
-	if (WARN_ON(!get_device(fw_work->device))) {
-		module_put(module);
-		kfree_const(fw_work->name);
-		kfree(fw_work);
-		return -ENODEV;
-	}
 	INIT_WORK(&fw_work->work, request_firmware_work_func);
 	schedule_work(&fw_work->work);
 	return 0;
+
+err_out_free_name:
+	kfree_const(fw_work->name);
+err_out_free_work:
+	kfree(fw_work);
+err_out:
+	put_device(device);
+	return err;
 }
 EXPORT_SYMBOL(request_firmware_nowait);
 
