@@ -1118,14 +1118,15 @@ static void request_firmware_work_func(struct work_struct *work)
  * @uevent: sends uevent to copy the firmware image if this flag
  *	is non-zero else the firmware copy must be done manually.
  * @name: name of firmware file
- * @device: device for which firmware is being loaded
+ * @device: device for which firmware is being loaded. The caller must hold
+ * 	the reference count of @device during the lifetime of this routine
+ * 	and the @cont callback. This typically can be done with a completion
+ * 	and wait_for_completion prior to device teardown.
  * @gfp: allocation flags
  * @context: will be passed over to @cont, and
  *	@fw may be %NULL if firmware request fails.
  * @cont: function will be called asynchronously when the firmware
  *	request is over.
- *
- *	Caller must hold the reference count of @device.
  *
  *	Asynchronous variant of request_firmware() for user contexts:
  *		- sleep for as small periods as possible since it may
@@ -1171,7 +1172,12 @@ request_firmware_nowait(
 		return -EFAULT;
 	}
 
-	get_device(fw_work->device);
+	if (WARN_ON(!get_device(fw_work->device))) {
+		module_put(module);
+		kfree_const(fw_work->name);
+		kfree(fw_work);
+		return -ENODEV;
+	}
 	INIT_WORK(&fw_work->work, request_firmware_work_func);
 	schedule_work(&fw_work->work);
 	return 0;
