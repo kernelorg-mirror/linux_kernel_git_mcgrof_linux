@@ -1486,6 +1486,7 @@ static int count_subheaders(struct ctl_table *table)
 	return nr_subheaders + has_files;
 }
 
+/* Note: this can recurse and call itself when dealing with subdirectories */
 static int register_leaf_sysctl_tables(const char *path, char *pos,
 	struct ctl_table_header ***subheader, struct ctl_table_set *set,
 	struct ctl_table *table)
@@ -1571,9 +1572,10 @@ out:
  * Register a sysctl table hierarchy. @table should be a filled in ctl_table
  * array. A completely 0 filled entry terminates the table.
  *
- * See __register_sysctl_table for more details.
+ * See __register_sysctl_table for more details. This routine can
+ * recurse by having register_leaf_sysctl_tables() call itself.
  */
-struct ctl_table_header *__register_sysctl_paths(
+static struct ctl_table_header *__register_sysctl_paths(
 	struct ctl_table_set *set,
 	const struct ctl_path *path, struct ctl_table *table)
 {
@@ -1613,6 +1615,7 @@ struct ctl_table_header *__register_sysctl_paths(
 		subheader = subheaders;
 		header->ctl_table_arg = ctl_table_arg;
 
+		/* this can recurse */
 		if (register_leaf_sysctl_tables(new_path, pos, &subheader,
 						set, table))
 			goto err_register_leaves;
@@ -1635,37 +1638,22 @@ err_register_leaves:
 }
 
 /**
- * register_sysctl_paths - register a sysctl table hierarchy
- * @path: The path to the directory the sysctl table is in.
- * @table: the top-level table structure
- *
- * Register a sysctl table hierarchy. @table should be a filled in ctl_table
- * array. A completely 0 filled entry terminates the table.
- *
- * See __register_sysctl_paths for more details.
- */
-struct ctl_table_header *register_sysctl_paths(const struct ctl_path *path,
-						struct ctl_table *table)
-{
-	return __register_sysctl_paths(&sysctl_table_root.default_set,
-					path, table);
-}
-EXPORT_SYMBOL(register_sysctl_paths);
-
-/**
  * register_sysctl_table - register a sysctl table hierarchy
  * @table: the top-level table structure
  *
  * Register a sysctl table hierarchy. @table should be a filled in ctl_table
  * array. A completely 0 filled entry terminates the table.
  *
- * See register_sysctl_paths for more details.
+ * See __register_sysctl_paths for more details.
+ *
+ * This is a deprecated compatibility wrapper. You should avoid adding new
+ * users of this into the kernel.
  */
 struct ctl_table_header *register_sysctl_table(struct ctl_table *table)
 {
 	static const struct ctl_path null_path[] = { {} };
 
-	return register_sysctl_paths(null_path, table);
+	return __register_sysctl_paths(&sysctl_table_root.default_set, null_path, table);
 }
 EXPORT_SYMBOL(register_sysctl_table);
 
