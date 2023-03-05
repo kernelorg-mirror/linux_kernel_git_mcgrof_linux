@@ -188,22 +188,31 @@ void iomap_dio_bio_end_io(struct bio *bio)
 }
 EXPORT_SYMBOL_GPL(iomap_dio_bio_end_io);
 
+#define howmany(x, y) (((x)+((y)-1))/(y))
 static void iomap_dio_zero(const struct iomap_iter *iter, struct iomap_dio *dio,
 		loff_t pos, unsigned len)
 {
 	struct inode *inode = file_inode(dio->iocb->ki_filp);
 	struct page *page = ZERO_PAGE(0);
 	struct bio *bio;
+	int npages = howmany(len, PAGE_SIZE);
 
-	bio = iomap_dio_alloc_bio(iter, dio, 1, REQ_OP_WRITE | REQ_SYNC | REQ_IDLE);
+	WARN_ON_ONCE(npages > 16);
+
+	bio = iomap_dio_alloc_bio(iter, dio, npages, REQ_OP_WRITE | REQ_SYNC | REQ_IDLE);
 	fscrypt_set_bio_crypt_ctx(bio, inode, pos >> inode->i_blkbits,
 				  GFP_KERNEL);
 	bio->bi_iter.bi_sector = iomap_sector(&iter->iomap, pos);
 	bio->bi_private = dio;
 	bio->bi_end_io = iomap_dio_bio_end_io;
 
-	get_page(page);
-	__bio_add_page(bio, page, len, 0);
+	while (npages-- > 0) {
+		unsigned plen = min_t(unsigned, PAGE_SIZE, len);
+		get_page(page);
+		__bio_add_page(bio, page, plen, 0);
+		len -= plen;
+	}
+	WARN_ON(len != 0);
 	iomap_dio_submit_bio(iter, dio, bio, pos);
 }
 
@@ -454,6 +463,39 @@ static loff_t iomap_dio_iter(const struct iomap_iter *iter,
 }
 
 /*
+ * This is lifted almost straight from xfs_flush_unmap_range(). Need a generic
+ * version of the block size rounding for these purposes.
+ */
+static int
+iomap_flush_unmap_range(struct file *f, loff_t offset, loff_t len, bool write)
+{
+	struct inode *inode = file_inode(f);
+	loff_t rounding, start, end;
+	int ret;
+
+	rounding = max_t(loff_t, i_blocksize(inode), PAGE_SIZE);
+	start = round_down(offset, rounding);
+	end = round_up(offset + len, rounding) - 1;
+
+	ret = filemap_write_and_wait_range(inode->i_mapping, start, end);
+	if (ret)
+		return ret;
+
+	/*
+	 * Try to invalidate cache pages for the range we are writing.
+	 * If this invalidation fails, let the caller fall back to
+	 * buffered I/O.
+	 */
+	if (invalidate_inode_pages2_range(inode->i_mapping,
+			start >> PAGE_SHIFT, end >> PAGE_SHIFT)) {
+		trace_iomap_dio_invalidate_fail(inode, start, end - start);
+		return -ENOTBLK;
+	}
+
+	return 0;
+}
+
+/*
  * iomap_dio_rw() always completes O_[D]SYNC writes regardless of whether the IO
  * is being issued as AIO or not.  This allows us to optimise pure data writes
  * to use REQ_FUA rather than requiring generic_write_sync() to issue a
@@ -563,24 +605,12 @@ __iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
 		iomi.flags |= IOMAP_OVERWRITE_ONLY;
 	}
 
-	ret = filemap_write_and_wait_range(mapping, iomi.pos, end);
+	ret = iomap_flush_unmap_range(iocb->ki_filp, iomi.pos, end,
+				      (iov_iter_rw(iter) == WRITE));
 	if (ret)
 		goto out_free_dio;
 
 	if (iov_iter_rw(iter) == WRITE) {
-		/*
-		 * Try to invalidate cache pages for the range we are writing.
-		 * If this invalidation fails, let the caller fall back to
-		 * buffered I/O.
-		 */
-		if (invalidate_inode_pages2_range(mapping,
-				iomi.pos >> PAGE_SHIFT, end >> PAGE_SHIFT)) {
-			trace_iomap_dio_invalidate_fail(inode, iomi.pos,
-							iomi.len);
-			ret = -ENOTBLK;
-			goto out_free_dio;
-		}
-
 		if (!wait_for_completion && !inode->i_sb->s_dio_done_wq) {
 			ret = sb_init_dio_done_wq(inode->i_sb);
 			if (ret < 0)
