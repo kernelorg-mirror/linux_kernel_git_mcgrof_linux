@@ -782,6 +782,68 @@ static size_t iomap_write_end(struct iomap_iter *iter, loff_t pos, size_t len,
 	return ret;
 }
 
+static loff_t iomap_zero_iter(struct iomap_iter *iter, bool *did_zero)
+{
+	const struct iomap *srcmap = iomap_iter_srcmap(iter);
+	loff_t pos = iter->pos;
+	loff_t length = iomap_length(iter);
+	loff_t written = 0;
+
+	/* already zeroed?  we're done. */
+	if (srcmap->type == IOMAP_HOLE || srcmap->type == IOMAP_UNWRITTEN)
+		return length;
+
+	do {
+		struct folio *folio;
+		int status;
+		size_t offset;
+		size_t bytes = min_t(u64, SIZE_MAX, length);
+
+		status = iomap_write_begin(iter, pos, bytes, &folio);
+		if (status)
+			return status;
+		if (iter->iomap.flags & IOMAP_F_STALE)
+			break;
+
+		offset = offset_in_folio(folio, pos);
+		if (bytes > folio_size(folio) - offset)
+			bytes = folio_size(folio) - offset;
+
+		folio_zero_range(folio, offset, bytes);
+		folio_mark_accessed(folio);
+
+		bytes = iomap_write_end(iter, pos, bytes, bytes, folio);
+		if (WARN_ON_ONCE(bytes == 0))
+			return -EIO;
+
+		pos += bytes;
+		length -= bytes;
+		written += bytes;
+	} while (length > 0);
+
+	if (did_zero)
+		*did_zero = true;
+	return written;
+}
+
+int
+iomap_zero_range(struct inode *inode, loff_t pos, loff_t len, bool *did_zero,
+		const struct iomap_ops *ops)
+{
+	struct iomap_iter iter = {
+		.inode		= inode,
+		.pos		= pos,
+		.len		= len,
+		.flags		= IOMAP_ZERO,
+	};
+	int ret;
+
+	while ((ret = iomap_iter(&iter, ops)) > 0)
+		iter.processed = iomap_zero_iter(&iter, did_zero);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(iomap_zero_range);
+
 static loff_t iomap_write_iter(struct iomap_iter *iter, struct iov_iter *i)
 {
 	loff_t length = iomap_length(iter);
@@ -1174,68 +1236,6 @@ iomap_file_unshare(struct inode *inode, loff_t pos, loff_t len,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(iomap_file_unshare);
-
-static loff_t iomap_zero_iter(struct iomap_iter *iter, bool *did_zero)
-{
-	const struct iomap *srcmap = iomap_iter_srcmap(iter);
-	loff_t pos = iter->pos;
-	loff_t length = iomap_length(iter);
-	loff_t written = 0;
-
-	/* already zeroed?  we're done. */
-	if (srcmap->type == IOMAP_HOLE || srcmap->type == IOMAP_UNWRITTEN)
-		return length;
-
-	do {
-		struct folio *folio;
-		int status;
-		size_t offset;
-		size_t bytes = min_t(u64, SIZE_MAX, length);
-
-		status = iomap_write_begin(iter, pos, bytes, &folio);
-		if (status)
-			return status;
-		if (iter->iomap.flags & IOMAP_F_STALE)
-			break;
-
-		offset = offset_in_folio(folio, pos);
-		if (bytes > folio_size(folio) - offset)
-			bytes = folio_size(folio) - offset;
-
-		folio_zero_range(folio, offset, bytes);
-		folio_mark_accessed(folio);
-
-		bytes = iomap_write_end(iter, pos, bytes, bytes, folio);
-		if (WARN_ON_ONCE(bytes == 0))
-			return -EIO;
-
-		pos += bytes;
-		length -= bytes;
-		written += bytes;
-	} while (length > 0);
-
-	if (did_zero)
-		*did_zero = true;
-	return written;
-}
-
-int
-iomap_zero_range(struct inode *inode, loff_t pos, loff_t len, bool *did_zero,
-		const struct iomap_ops *ops)
-{
-	struct iomap_iter iter = {
-		.inode		= inode,
-		.pos		= pos,
-		.len		= len,
-		.flags		= IOMAP_ZERO,
-	};
-	int ret;
-
-	while ((ret = iomap_iter(&iter, ops)) > 0)
-		iter.processed = iomap_zero_iter(&iter, did_zero);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(iomap_zero_range);
 
 /*
  * Zero the truncated tail of the page provided.
