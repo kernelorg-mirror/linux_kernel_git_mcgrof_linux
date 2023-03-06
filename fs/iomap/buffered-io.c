@@ -93,7 +93,7 @@ static void iomap_adjust_read_range(struct inode *inode, struct folio *folio,
 	struct iomap_page *iop = to_iomap_page(folio);
 	loff_t orig_pos = *pos;
 	loff_t isize = i_size_read(inode);
-	unsigned block_bits = inode->i_blkbits;
+	unsigned block_bits = min_t(unsigned, inode->i_blkbits, PAGE_SHIFT);
 	unsigned block_size = (1 << block_bits);
 	size_t poff = offset_in_folio(folio, *pos);
 	size_t plen = min_t(loff_t, folio_size(folio) - poff, length);
@@ -550,12 +550,17 @@ static int iomap_read_folio_sync(loff_t block_start, struct folio *folio,
 	return submit_bio_wait(&bio);
 }
 
+/*
+ * If block size > PAGE_SIZE, we're actually working on offsets into
+ * the page, not offsets into the block. IOWs, it looks exactly like
+ * the block size == PAGE_SIZE.
+ */
 static int __iomap_write_begin(const struct iomap_iter *iter, loff_t pos,
 		size_t len, struct folio *folio)
 {
 	const struct iomap *srcmap = iomap_iter_srcmap(iter);
 	struct iomap_page *iop;
-	loff_t block_size = i_blocksize(iter->inode);
+	loff_t block_size = iomap_pageblock_size(iter->inode);
 	loff_t block_start = round_down(pos, block_size);
 	loff_t block_end = round_up(pos + len, block_size);
 	unsigned int nr_blocks = i_blocks_per_folio(iter->inode, folio);
@@ -1232,11 +1237,18 @@ iomap_zero_range(struct inode *inode, loff_t pos, loff_t len, bool *did_zero,
 }
 EXPORT_SYMBOL_GPL(iomap_zero_range);
 
+/*
+ * Zero the truncated tail of the page provided.
+ *
+ * For block size > page size, we zero just the tail of the page as that is all
+ * we need for mmap() to see correctly zeroed space. File extension
+ * will need to zero the remainder of the block that we haven't zeroed here.
+ */
 int
 iomap_truncate_page(struct inode *inode, loff_t pos, bool *did_zero,
 		const struct iomap_ops *ops)
 {
-	unsigned int blocksize = i_blocksize(inode);
+	unsigned int blocksize = iomap_pageblock_size(inode);
 	unsigned int off = pos & (blocksize - 1);
 
 	/* Block boundary? Nothing to do */
@@ -1578,7 +1590,7 @@ iomap_add_to_ioend(struct inode *inode, loff_t pos, struct folio *folio,
 		struct writeback_control *wbc, struct list_head *iolist)
 {
 	sector_t sector = iomap_sector(&wpc->iomap, pos);
-	unsigned len = i_blocksize(inode);
+	unsigned len = iomap_pageblock_size(inode);
 	size_t poff = offset_in_folio(folio, pos);
 
 	if (!wpc->ioend || !iomap_can_add_to_ioend(wpc, pos, sector)) {
@@ -1621,7 +1633,7 @@ iomap_writepage_map(struct iomap_writepage_ctx *wpc,
 {
 	struct iomap_page *iop = iomap_page_create(inode, folio, 0);
 	struct iomap_ioend *ioend, *next;
-	unsigned len = i_blocksize(inode);
+	unsigned len = iomap_pageblock_size(inode);
 	unsigned nblocks = i_blocks_per_folio(inode, folio);
 	u64 pos = folio_pos(folio);
 	int error = 0, count = 0, i;

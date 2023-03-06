@@ -252,6 +252,17 @@ static inline const struct iomap *iomap_iter_srcmap(const struct iomap_iter *i)
 	return &i->iomap;
 }
 
+/*
+ * Return the block size we should use for page cache based operations.
+ * This will return the inode block size for block size < PAGE_SIZE,
+ * otherwise it will return PAGE_SIZE.
+ */
+static inline unsigned
+iomap_pageblock_size(struct inode *inode)
+{
+	return min_t(unsigned, PAGE_SIZE, i_blocksize(inode));
+}
+
 ssize_t iomap_file_buffered_write(struct kiocb *iocb, struct iov_iter *from,
 		const struct iomap_ops *ops);
 int iomap_file_buffered_write_punch_delalloc(struct inode *inode,
