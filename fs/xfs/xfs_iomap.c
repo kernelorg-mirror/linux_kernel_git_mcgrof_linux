@@ -829,6 +829,15 @@ xfs_direct_write_iomap_begin(
 		length = XFS_FSB_TO_B(mp, end_fsb) - offset;
 	}
 
+	/*
+	 * If we are about to write to an unwritten extent and the
+	 * the block size is larger than page size, then we need to make sure
+	 * that the caller zeroes blocks partially covered by data.
+	 */
+	if (imap.br_state == XFS_EXT_UNWRITTEN &&
+	    mp->m_sb.sb_blocksize > PAGE_SIZE)
+		iomap_flags |= IOMAP_F_ZERO_AROUND;
+
 	if (imap_needs_alloc(inode, flags, &imap, nimaps))
 		goto allocate_blocks;
 
@@ -965,6 +974,7 @@ xfs_buffered_write_iomap_begin(
 	int			error = 0;
 	unsigned int		lockmode = XFS_ILOCK_EXCL;
 	u64			seq;
+	u16			iomap_flags = 0;
 
 	if (xfs_is_shutdown(mp))
 		return -EIO;
@@ -1041,6 +1051,14 @@ xfs_buffered_write_iomap_begin(
 		 */
 		if (!xfs_is_cow_inode(ip) ||
 		    ((flags & IOMAP_ZERO) && imap.br_state != XFS_EXT_NORM)) {
+			/*
+			 * If we are about to write to an unwritten extent and the
+			 * the block size is larger than page size, then we need to make sure
+			 * that the caller zeroes blocks partially covered by data.
+			 */
+			if (imap.br_state == XFS_EXT_UNWRITTEN &&
+			    mp->m_sb.sb_blocksize > PAGE_SIZE)
+				iomap_flags |= IOMAP_F_ZERO_AROUND;
 			trace_xfs_iomap_found(ip, offset, count, XFS_DATA_FORK,
 					&imap);
 			goto found_imap;
@@ -1146,13 +1164,16 @@ retry:
 	 */
 	seq = xfs_iomap_inode_sequence(ip, IOMAP_F_NEW);
 	xfs_iunlock(ip, XFS_ILOCK_EXCL);
+	iomap_flags = IOMAP_F_NEW;
+	if (mp->m_sb.sb_blocksize > PAGE_SIZE)
+		iomap_flags |= IOMAP_F_ZERO_AROUND;
 	trace_xfs_iomap_alloc(ip, offset, count, allocfork, &imap);
-	return xfs_bmbt_to_iomap(ip, iomap, &imap, flags, IOMAP_F_NEW, seq);
+	return xfs_bmbt_to_iomap(ip, iomap, &imap, flags, iomap_flags, seq);
 
 found_imap:
 	seq = xfs_iomap_inode_sequence(ip, 0);
 	xfs_iunlock(ip, XFS_ILOCK_EXCL);
-	return xfs_bmbt_to_iomap(ip, iomap, &imap, flags, 0, seq);
+	return xfs_bmbt_to_iomap(ip, iomap, &imap, flags, iomap_flags, seq);
 
 found_cow:
 	seq = xfs_iomap_inode_sequence(ip, 0);
