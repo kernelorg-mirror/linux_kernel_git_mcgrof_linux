@@ -782,6 +782,26 @@ static size_t iomap_write_end(struct iomap_iter *iter, loff_t pos, size_t len,
 	return ret;
 }
 
+/*
+ * We need to zero around the write if the write lands in a hole or an unwritten
+ * extent and the IOMAP_F_ZERO_AROUND flag is set. If we are in newly allocated
+ * space (i.e. write landed in a hole), IOMAP_F_NEW will be set. If we landed
+ * in an unwritten extent, the type will be IOMAP_UNWRITTEN.
+ */
+static bool
+iomap_need_zero_around(struct iomap_iter *iter)
+{
+	struct iomap *iomap = &iter->iomap;
+
+	if (!(iomap->flags & IOMAP_F_ZERO_AROUND))
+		return false;
+	if (iomap->flags & IOMAP_F_NEW)
+		return true;
+	if (iomap->type == IOMAP_UNWRITTEN)
+		return true;
+	return false;
+}
+
 static loff_t iomap_zero_iter(struct iomap_iter *iter, bool *did_zero)
 {
 	const struct iomap *srcmap = iomap_iter_srcmap(iter);
@@ -826,6 +846,72 @@ static loff_t iomap_zero_iter(struct iomap_iter *iter, bool *did_zero)
 	return written;
 }
 
+/*
+ * If we need to do zero-around, we zero the partial leading block that the
+ * data_start lands in, and if the iomap extends past the end of the write, we
+ * zero that partial block, too. Don't zero tail blocks beyond EOF.
+ */
+static loff_t
+iomap_zero_around(struct iomap_iter *iter, loff_t data_start, loff_t length,
+		  const struct iomap_ops *ops)
+{
+	struct iomap *iomap = &iter->iomap;
+	struct inode *inode = iter->inode;
+	loff_t data_end = data_start + length;
+	loff_t pos;
+	loff_t end = data_end;
+	loff_t status;
+	bool did_zero;
+	unsigned long offset; /* Offset into pagecache page */
+	unsigned long bytes; /* Bytes to write to page */
+
+	pos = round_down(data_start, i_blocksize(inode));
+	if (end < i_size_read(inode))
+		end = round_up(end, i_blocksize(inode));
+
+	/*
+	 * If the end is now past EOF, it means this write is at or
+	 * completely inside EOF and so we only zero from the end of the
+	 * write to EOF. If we are extending the file this avoids tail
+	 * zeroing altogether.
+	 */
+	if (end >= i_size_read(inode))
+		end = max(data_end, i_size_read(inode));
+
+	WARN_ON_ONCE(pos < iomap->offset);
+	WARN_ON_ONCE(offset_in_page(pos));
+	WARN_ON_ONCE(end > iomap->offset + iomap->length);
+	WARN_ON_ONCE(end < data_end);
+
+	/* zero start */
+	while (pos < data_start) {
+		offset = offset_in_page(pos);
+		bytes = min_t(unsigned long, data_start - pos,
+					    PAGE_SIZE - offset);
+		status = iomap_zero_range(inode, offset, bytes, &did_zero, ops);
+		if (status < 0)
+			return status;
+		pos += bytes;
+		/* we recurse to imap but only for one entry */
+		WARN_ON_ONCE(bytes != status);
+	}
+
+	/* zero end */
+	pos = data_end;
+	while (pos < end) {
+		offset = offset_in_page(pos);
+		bytes = min_t(unsigned long, end - pos, PAGE_SIZE - offset);
+
+		status = iomap_zero_range(inode, offset, bytes, &did_zero, ops);
+		if (status < 0)
+			return status;
+		pos += bytes;
+		/* we recurse to imap but only for one entry */
+		WARN_ON_ONCE(bytes != status);
+	}
+	return 0;
+}
+
 int
 iomap_zero_range(struct inode *inode, loff_t pos, loff_t len, bool *did_zero,
 		const struct iomap_ops *ops)
@@ -844,7 +930,8 @@ iomap_zero_range(struct inode *inode, loff_t pos, loff_t len, bool *did_zero,
 }
 EXPORT_SYMBOL_GPL(iomap_zero_range);
 
-static loff_t iomap_write_iter(struct iomap_iter *iter, struct iov_iter *i)
+static loff_t iomap_write_iter(struct iomap_iter *iter, struct iov_iter *i,
+			       const struct iomap_ops *ops)
 {
 	loff_t length = iomap_length(iter);
 	loff_t pos = iter->pos;
@@ -852,6 +939,12 @@ static loff_t iomap_write_iter(struct iomap_iter *iter, struct iov_iter *i)
 	long status = 0;
 	struct address_space *mapping = iter->inode->i_mapping;
 	unsigned int bdp_flags = (iter->flags & IOMAP_NOWAIT) ? BDP_ASYNC : 0;
+
+	if (iomap_need_zero_around(iter)) {
+		status = iomap_zero_around(iter, pos, length, ops);
+		if (status)
+			return status;
+	}
 
 	do {
 		struct folio *folio;
@@ -944,7 +1037,7 @@ iomap_file_buffered_write(struct kiocb *iocb, struct iov_iter *i,
 		iter.flags |= IOMAP_NOWAIT;
 
 	while ((ret = iomap_iter(&iter, ops)) > 0)
-		iter.processed = iomap_write_iter(&iter, i);
+		iter.processed = iomap_write_iter(&iter, i, ops);
 	if (iter.pos == iocb->ki_pos)
 		return ret;
 	return iter.pos - iocb->ki_pos;
