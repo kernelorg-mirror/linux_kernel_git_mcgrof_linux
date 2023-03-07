@@ -566,6 +566,7 @@ static int __iomap_write_begin(const struct iomap_iter *iter, loff_t pos,
 	unsigned int nr_blocks = i_blocks_per_folio(iter->inode, folio);
 	size_t from = offset_in_folio(folio, pos), to = from + len;
 	size_t poff, plen;
+	bool do_range_update;
 
 	if (folio_test_uptodate(folio))
 		return 0;
@@ -576,6 +577,7 @@ static int __iomap_write_begin(const struct iomap_iter *iter, loff_t pos,
 		return -EAGAIN;
 
 	do {
+		do_range_update = true;
 		iomap_adjust_read_range(iter->inode, folio, &block_start,
 				block_end - block_start, &poff, &plen);
 		if (plen == 0)
@@ -589,7 +591,17 @@ static int __iomap_write_begin(const struct iomap_iter *iter, loff_t pos,
 		if (iomap_block_needs_zeroing(iter, block_start)) {
 			if (WARN_ON_ONCE(iter->flags & IOMAP_UNSHARE))
 				return -EIO;
-			folio_zero_segments(folio, poff, from, to, poff + plen);
+			if (block_start >= i_size_read(iter->inode)) {
+				const struct iomap *iomap = &iter->iomap;
+				folio_zero_segments(folio, poff, from, to, poff + plen);
+				/*
+				 * if this is zero-around, we don't want to mark the page
+				 * uptodate here  because this is only a partial page zeroing
+				 * and there's still more data to be written into the page.
+				 */
+				if (!(iomap->flags & IOMAP_F_ZERO_AROUND))
+					do_range_update = false;
+			}
 		} else {
 			int status;
 
@@ -601,7 +613,8 @@ static int __iomap_write_begin(const struct iomap_iter *iter, loff_t pos,
 			if (status)
 				return status;
 		}
-		iomap_set_range_uptodate(folio, iop, poff, plen);
+		if (do_range_update)
+			iomap_set_range_uptodate(folio, iop, poff, plen);
 	} while ((block_start += plen) < block_end);
 
 	return 0;
