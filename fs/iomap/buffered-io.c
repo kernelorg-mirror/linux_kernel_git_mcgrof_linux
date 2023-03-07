@@ -802,22 +802,59 @@ iomap_need_zero_around(struct iomap_iter *iter)
 	return false;
 }
 
-static loff_t iomap_zero_iter(struct iomap_iter *iter, bool *did_zero)
+static loff_t
+iomap_zero_around(struct iomap_iter *iter, loff_t data_start, loff_t length,
+		  const struct iomap_ops *ops);
+
+static loff_t iomap_zero_iter(struct iomap_iter *iter, bool *did_zero,
+			      const struct iomap_ops *ops)
 {
 	const struct iomap *srcmap = iomap_iter_srcmap(iter);
 	loff_t pos = iter->pos;
 	loff_t length = iomap_length(iter);
 	loff_t written = 0;
+	loff_t old_length = 0;
 
 	/* already zeroed?  we're done. */
-	if (srcmap->type == IOMAP_HOLE || srcmap->type == IOMAP_UNWRITTEN)
-		return length;
+	if (srcmap->type == IOMAP_HOLE || srcmap->type == IOMAP_UNWRITTEN) {
+		struct inode *inode = iter->inode;
+		struct iomap *iomap = &iter->iomap;
+		long status;
+		if (!iomap_need_zero_around(iter))
+			return length;
+		/*
+		 * Because we landed in a hole, we only need to zero to the end
+		 * of this block. We'll do that by the loop below, but we need
+		 * to trim count here so the zero-around only acts on this
+		 * block, too.
+		 *
+		 * The magic "pos + 1" is needed because we want the offset of
+		 * the next block after pos. If pos is already aligned to the
+		 * block size, the round_up() returns the same value, not that
+		 * of the next highest multiple. Hence we have to add 1 to pos
+		 * to get round_up() to behave as we want.
+		 */
+		old_length = length;
+		if (pos + length > round_up(pos + 1, i_blocksize(inode)))
+			length = round_up(pos + 1, i_blocksize(inode)) - pos;
+
+		status = iomap_zero_around(iter, pos, length, ops);
+		if (status)
+			return status;
+
+		/*
+		 * now clear the zero-around flag so that the range requested
+		 * in this block will be unconditionally zeroed.
+		 */
+		iomap->flags &= ~IOMAP_F_ZERO_AROUND;
+	}
 
 	do {
 		struct folio *folio;
 		int status;
 		size_t offset;
 		size_t bytes = min_t(u64, SIZE_MAX, length);
+		struct iomap *iomap;
 
 		status = iomap_write_begin(iter, pos, bytes, &folio);
 		if (status)
@@ -829,7 +866,15 @@ static loff_t iomap_zero_iter(struct iomap_iter *iter, bool *did_zero)
 		if (bytes > folio_size(folio) - offset)
 			bytes = folio_size(folio) - offset;
 
-		folio_zero_range(folio, offset, bytes);
+		iomap = &iter->iomap;
+		/*
+		 * zero-around is conditional on whether the page we found already
+		 * contains data or not. If it's up to date, it contains data and we
+		 * should not zero it. We still need to mark it dirty to get that data
+		 * written, however.
+		 */
+		if (!(iomap->flags & IOMAP_F_ZERO_AROUND) || !folio_test_uptodate(folio))
+			folio_zero_range(folio, offset, bytes);
 		folio_mark_accessed(folio);
 
 		bytes = iomap_write_end(iter, pos, bytes, bytes, folio);
@@ -843,7 +888,7 @@ static loff_t iomap_zero_iter(struct iomap_iter *iter, bool *did_zero)
 
 	if (did_zero)
 		*did_zero = true;
-	return written;
+	return old_length ? old_length : written;
 }
 
 /*
@@ -925,7 +970,7 @@ iomap_zero_range(struct inode *inode, loff_t pos, loff_t len, bool *did_zero,
 	int ret;
 
 	while ((ret = iomap_iter(&iter, ops)) > 0)
-		iter.processed = iomap_zero_iter(&iter, did_zero);
+		iter.processed = iomap_zero_iter(&iter, did_zero, ops);
 	return ret;
 }
 EXPORT_SYMBOL_GPL(iomap_zero_range);
