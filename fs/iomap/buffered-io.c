@@ -1410,10 +1410,50 @@ iomap_truncate_page(struct inode *inode, loff_t pos, bool *did_zero,
 EXPORT_SYMBOL_GPL(iomap_truncate_page);
 
 static loff_t iomap_folio_mkwrite_iter(struct iomap_iter *iter,
-		struct folio *folio)
+		struct folio *folio, const struct iomap_ops *ops)
 {
 	loff_t length = iomap_length(iter);
-	int ret;
+	loff_t ret;
+
+	/*
+	 * if we need to zero-around, we have to unlock the page we were given.
+	 * No big deal, we just have to repeat the "is this page ours" checks
+	 * after relocking it
+	 */
+	if (iomap_need_zero_around(iter)) {
+		long status;
+		loff_t size;
+
+		/*
+		 * This only happens for block size > page size, so the file
+		 * offset of a page fault should always be page aligned.
+		 */
+		WARN_ON(offset_in_folio(folio, iter->pos));
+
+		folio_unlock(folio);
+		status = iomap_zero_around(iter, iter->pos, length, ops);
+		folio_lock(folio);
+		size = i_size_read(iter->inode);
+		if ((folio->mapping != iter->inode->i_mapping) ||
+		    (folio_pos(folio) > size)) {
+			/* We overload EFAULT to mean page got truncated */
+			return -EFAULT;
+		}
+
+		if (folio_pos(folio) != iter->pos) {
+			/* it moved in the file! */
+			return -EFAULT;
+		}
+
+		/* return failure now if zeroing had an error */
+		if (status)
+			return status;
+
+		/* trim down the length is we straddle EOF. */
+		if (((folio->index + 1) << PAGE_SHIFT) > size)
+			length = offset_in_folio(folio, size);
+
+	}
 
 	if (iter->iomap.flags & IOMAP_F_BUFFER_HEAD) {
 		ret = __block_write_begin_int(folio, iter->pos, length, NULL,
@@ -1445,7 +1485,7 @@ vm_fault_t iomap_page_mkwrite(struct vm_fault *vmf, const struct iomap_ops *ops)
 	iter.pos = folio_pos(folio);
 	iter.len = ret;
 	while ((ret = iomap_iter(&iter, ops)) > 0)
-		iter.processed = iomap_folio_mkwrite_iter(&iter, folio);
+		iter.processed = iomap_folio_mkwrite_iter(&iter, folio, ops);
 
 	if (ret < 0)
 		goto out_unlock;
