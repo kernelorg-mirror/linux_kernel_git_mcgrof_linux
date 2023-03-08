@@ -494,6 +494,7 @@ xfs_vm_writepages(
 	struct writeback_control *wbc)
 {
 	struct xfs_writepage_ctx wpc = { };
+	unsigned		bsize_pages =	i_blocksize(mapping->host) << PAGE_SHIFT;
 
 	/*
 	 * Writing back data in a transaction context can result in recursive
@@ -501,6 +502,19 @@ xfs_vm_writepages(
 	 */
 	if (WARN_ON_ONCE(current->journal_info))
 		return 0;
+
+	/*
+	 * If the block size is larger than page size, extent the incoming write
+	 * request to fsb granularity and alignment. This is a requirement for
+	 * data integrity operations and it doesn't hurt for other write
+	 * operations, so do it unconditionally.
+	 */
+	if (wbc->range_start)
+		wbc->range_start = round_down(wbc->range_start, bsize_pages);
+	if (wbc->range_end != LLONG_MAX)
+		wbc->range_end = round_up(wbc->range_end, bsize_pages);
+	if (wbc->nr_to_write < wbc->range_end - wbc->range_start)
+		wbc->nr_to_write = round_up(wbc->nr_to_write, bsize_pages);
 
 	xfs_iflags_clear(XFS_I(mapping->host), XFS_ITRUNCATED);
 	return iomap_writepages(mapping, wbc, &wpc.ctx, &xfs_writeback_ops);
