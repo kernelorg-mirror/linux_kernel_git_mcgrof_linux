@@ -2610,7 +2610,7 @@ static int add_unformed_module(struct module *mod)
 		goto out;
 
 	mod_update_bounds(mod);
-	list_add_rcu(&mod->list, &modules);
+	list_add_tail_rcu(&mod->list, &modules);
 	mod_tree_insert(mod);
 	err = 0;
 
