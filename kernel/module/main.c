@@ -2713,6 +2713,10 @@ static int early_mod_check(struct load_info *info, int flags)
 	if (err)
 		return err;
 
+	err = module_patient_check_exists(info->mod->name);
+	if (err)
+		return err;
+
 	return 0;
 }
 
