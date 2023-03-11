@@ -1998,7 +1998,7 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 
 	err = check_modinfo_livepatch(mod, info);
 	if (err)
-		return err;
+		goto err_out;
 
 	/* Set up license info based on the info section */
 	set_license(mod, get_modinfo(info, "license"));
@@ -2011,6 +2011,8 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 	}
 
 	return 0;
+err_out:
+	return err;
 }
 
 static int find_module_sections(struct module *mod, struct load_info *info)
@@ -2288,12 +2290,12 @@ static struct module *layout_and_allocate(struct load_info *info, int flags)
 	err = module_frob_arch_sections(info->hdr, info->sechdrs,
 					info->secstrings, info->mod);
 	if (err < 0)
-		return ERR_PTR(err);
+		goto err_out;
 
 	err = module_enforce_rwx_sections(info->hdr, info->sechdrs,
 					  info->secstrings, info->mod);
 	if (err < 0)
-		return ERR_PTR(err);
+		goto err_out;
 
 	/* We will do a special allocation for per-cpu sections later. */
 	info->sechdrs[info->index.pcpu].sh_flags &= ~(unsigned long)SHF_ALLOC;
@@ -2327,12 +2329,14 @@ static struct module *layout_and_allocate(struct load_info *info, int flags)
 	/* Allocate and move to the final place */
 	err = move_module(info->mod, info);
 	if (err)
-		return ERR_PTR(err);
+		goto err_out;
 
 	/* Module has been copied to its final place now: return it. */
 	mod = (void *)info->sechdrs[info->index.mod].sh_addr;
 	kmemleak_load_module(mod, info);
 	return mod;
+err_out:
+	return ERR_PTR(err);
 }
 
 /* mod is no longer valid after this! */
