@@ -2,6 +2,7 @@
 /*
  * Copyright (C) 2002 Richard Henderson
  * Copyright (C) 2001 Rusty Russell, 2002, 2010 Rusty Russell IBM.
+ * Copyright (C) 2023 Luis Chamberlain <mcgrof@kernel.org>
  */
 
 #define INCLUDE_VERMAGIC
@@ -1035,8 +1036,7 @@ char *module_next_tag_pair(char *string, unsigned long *secsize)
 	return string;
 }
 
-static char *get_next_modinfo(const struct load_info *info, const char *tag,
-			      char *prev)
+char *get_next_modinfo(const struct load_info *info, const char *tag, char *prev)
 {
 	char *p;
 	unsigned int taglen = strlen(tag);
@@ -1061,7 +1061,7 @@ static char *get_next_modinfo(const struct load_info *info, const char *tag,
 	return NULL;
 }
 
-static char *get_modinfo(const struct load_info *info, const char *tag)
+char *get_modinfo(const struct load_info *info, const char *tag)
 {
 	return get_next_modinfo(info, tag, NULL);
 }
@@ -1289,6 +1289,7 @@ static void free_module(struct module *mod)
 	module_arch_freeing_init(mod);
 	kfree(mod->args);
 	percpu_modfree(mod);
+	free_mod_aliases(mod);
 
 	free_mod_mem(mod);
 }
@@ -1989,6 +1990,12 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 			"is unknown, you have been warned.\n", mod->name);
 	}
 
+	if (get_modinfo(info, "alias")) {
+		err = module_process_aliases(mod, info);
+		if (err)
+			goto err_out_skip_alloc;
+	}
+
 	err = check_modinfo_livepatch(mod, info);
 	if (err)
 		goto err_out;
@@ -2005,6 +2012,8 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 
 	return 0;
 err_out:
+	free_mod_aliases(mod);
+err_out_skip_alloc:
 	return err;
 }
 
@@ -2329,6 +2338,7 @@ static struct module *layout_and_allocate(struct load_info *info, int flags)
 	kmemleak_load_module(mod, info);
 	return mod;
 err_out:
+	free_mod_aliases(mod);
 	return ERR_PTR(err);
 }
 
@@ -2890,6 +2900,7 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	synchronize_rcu();
 	mutex_unlock(&module_mutex);
  free_module:
+	free_mod_aliases(mod);
 	/* Free lock-classes; relies on the preceding sync_rcu() */
 	for_class_mod_mem_type(type, core_data) {
 		lockdep_free_key_range(mod->mem[type].base,

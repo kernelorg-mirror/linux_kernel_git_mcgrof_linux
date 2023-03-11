@@ -96,6 +96,8 @@ long module_get_offset_and_type(struct module *mod, enum mod_mem_type type,
 char *module_flags(struct module *mod, char *buf, bool show_state);
 size_t module_flags_taint(unsigned long taints, char *buf);
 
+char *get_modinfo(const struct load_info *info, const char *tag);
+char *get_next_modinfo(const struct load_info *info, const char *tag, char *prev);
 char *module_next_tag_pair(char *string, unsigned long *secsize);
 
 #define for_each_modinfo_entry(entry, info, name) \
@@ -300,3 +302,16 @@ static inline int same_magic(const char *amagic, const char *bmagic, bool has_cr
 	return strcmp(amagic, bmagic) == 0;
 }
 #endif /* CONFIG_MODVERSIONS */
+
+#ifdef CONFIG_MODULE_KERNEL_ALIAS
+void free_mod_aliases(struct module *mod);
+int module_process_aliases(struct module *mod, struct load_info *info);
+#else
+static void free_mod_aliases(struct module *mod)
+{
+}
+static int module_process_aliases(struct module *mod, struct load_info *info)
+{
+	return 0;
+}
+#endif /* CONFIG_MODULE_KERNEL_ALIAS */

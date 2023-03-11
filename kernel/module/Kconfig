@@ -22,6 +22,25 @@ menuconfig MODULES
 
 if MODULES
 
+config MODULE_DEBUG
+	bool "Enable debugging information for modules"
+	default n
+	help
+	  Enables debugging of the module infrastructure. Say no unless you
+	  are debugging the module framework. Don't enable this on production.
+	  This is only for experimentation and debugging.
+
+config MODULE_KERNEL_ALIAS
+	bool "Enable in-kernel alias processing for modules"
+	default n
+	depends on MODULE_DEBUG
+	help
+	  The kernel has historically not processed aliases in-kernel since
+	  we expect userspace can do all the proper work for us. Enable this
+	  if you want to experiment processing aliases in-kernel. This will
+	  bloat your kernel modules's memory by the number of aliases each
+	  module has once loaded into the kernel.
+
 config MODULE_FORCE_LOAD
 	bool "Forced module loading"
 	default n
