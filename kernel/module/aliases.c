@@ -90,3 +90,20 @@ err_free:
 
 	return -ENOMEM;
 }
+
+bool module_name_match_aliases(struct module *mod, const char *name, size_t len)
+{
+	unsigned int i;
+	const char *alias;
+
+	for (i=0; i < mod->num_aliases; i++) {
+		alias = mod->aliases[i];
+		if (strlen(alias) == len && !memcmp(alias, name, len)) {
+			pr_debug("module %s alias matched: alias[%u] = %s\n",
+				 mod->name, i, alias);
+			return true;
+		}
+	}
+
+	return false;
+}

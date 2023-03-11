@@ -306,6 +306,7 @@ static inline int same_magic(const char *amagic, const char *bmagic, bool has_cr
 #ifdef CONFIG_MODULE_KERNEL_ALIAS
 void free_mod_aliases(struct module *mod);
 int module_process_aliases(struct module *mod, struct load_info *info);
+bool module_name_match_aliases(struct module *mod, const char *name, size_t len);
 #else
 static void free_mod_aliases(struct module *mod)
 {
@@ -313,5 +314,9 @@ static void free_mod_aliases(struct module *mod)
 static int module_process_aliases(struct module *mod, struct load_info *info)
 {
 	return 0;
+}
+static bool module_name_match_aliases(struct module *mod, const char *name, size_t len)
+{
+	return false;
 }
 #endif /* CONFIG_MODULE_KERNEL_ALIAS */

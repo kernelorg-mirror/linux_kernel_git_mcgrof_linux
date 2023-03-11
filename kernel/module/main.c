@@ -338,6 +338,14 @@ bool find_symbol(struct find_symbol_arg *fsa)
 	return false;
 }
 
+static bool module_name_match(struct module *mod, const char *name, size_t len)
+{
+	if (strlen(mod->name) == len && !memcmp(mod->name, name, len))
+		return true;
+
+	return module_name_match_aliases(mod, name, len);
+}
+
 /*
  * Search for module by name: must hold module_mutex (or preempt disabled
  * for read-only access).
@@ -353,7 +361,7 @@ struct module *find_module_all(const char *name, size_t len,
 				lockdep_is_held(&module_mutex)) {
 		if (!even_unformed && mod->state == MODULE_STATE_UNFORMED)
 			continue;
-		if (strlen(mod->name) == len && !memcmp(mod->name, name, len))
+		if (module_name_match(mod, name, len))
 			return mod;
 	}
 	return NULL;
