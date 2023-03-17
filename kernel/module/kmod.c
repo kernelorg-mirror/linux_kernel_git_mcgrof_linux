@@ -105,6 +105,8 @@ out:
 	return -ENOMEM;
 }
 
+bool module_autoload_proceed(const char *name);
+
 /**
  * __request_module - try to load a kernel module
  * @wait: wait (or not) for the operation to complete
@@ -167,8 +169,13 @@ int __request_module(bool wait, const char *fmt, ...)
 
 	trace_module_request(module_name, wait, _RET_IP_);
 
+	if (!module_autoload_proceed(module_name)) {
+		ret = 0;
+		goto out;
+	}
 	ret = call_modprobe(module_name, wait ? UMH_WAIT_PROC : UMH_WAIT_EXEC);
 
+out:
 	atomic_inc(&kmod_concurrent_max);
 	wake_up(&kmod_wq);
 
