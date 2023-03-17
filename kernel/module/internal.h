@@ -86,6 +86,7 @@ struct find_symbol_arg {
 	enum mod_license license;
 };
 
+bool module_autoload_proceed(const char *name);
 int mod_verify_sig(const void *mod, struct load_info *info);
 int try_to_force_load(struct module *mod, const char *reason);
 bool find_symbol(struct find_symbol_arg *fsa);

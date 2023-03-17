@@ -2666,6 +2666,24 @@ static int module_patient_check_exists(const char *name)
 }
 
 /*
+ * We allow contention of the module_mutex here because kernel module
+ * auto-loading a special feature *and* because we are only allowing
+ * MAX_KMOD_CONCURRENT possible checks at a time for a module.
+ */
+bool module_autoload_proceed(const char *name)
+{
+	int err;
+
+	mutex_lock(&module_mutex);
+	err = module_patient_check_exists(name);
+	mutex_unlock(&module_mutex);
+
+	if (err == -EEXIST)
+		return false;
+	return true;
+}
+
+/*
  * We try to place it in the list now to make sure it's unique before
  * we dedicate too many resources.  In particular, temporary percpu
  * memory exhaustion.
