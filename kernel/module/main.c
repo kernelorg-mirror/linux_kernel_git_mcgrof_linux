@@ -3015,6 +3015,8 @@ SYSCALL_DEFINE3(init_module, void __user *, umod,
 	return load_module(&info, uargs, 0);
 }
 
+static CONCURRENCY_LIMITER(module_loading_concurrency, 20);
+
 SYSCALL_DEFINE3(finit_module, int, fd, const char __user *, uargs, int, flags)
 {
 	struct load_info info = { };
@@ -3033,8 +3035,13 @@ SYSCALL_DEFINE3(finit_module, int, fd, const char __user *, uargs, int, flags)
 		      |MODULE_INIT_COMPRESSED_FILE))
 		return -EINVAL;
 
+	err = down_killable(&module_loading_concurrency);
+	if (err)
+		return err;
+
 	len = kernel_read_file_from_fd(fd, 0, &buf, INT_MAX, NULL,
 				       READING_MODULE);
+	up(&module_loading_concurrency);
 	if (len < 0)
 		return len;
 
