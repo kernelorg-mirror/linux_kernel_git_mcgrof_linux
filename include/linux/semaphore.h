@@ -28,6 +28,9 @@ struct semaphore {
 #define DEFINE_SEMAPHORE(name)	\
 	struct semaphore name = __SEMAPHORE_INITIALIZER(name, 1)
 
+#define CONCURRENCY_LIMITER(name, n) \
+	struct semaphore name = __SEMAPHORE_INITIALIZER(name, n)
+
 static inline void sema_init(struct semaphore *sem, int val)
 {
 	static struct lock_class_key __key;
