@@ -25,8 +25,15 @@ struct semaphore {
 	.wait_list	= LIST_HEAD_INIT((name).wait_list),		\
 }
 
-#define DEFINE_SEMAPHORE(name)	\
-	struct semaphore name = __SEMAPHORE_INITIALIZER(name, 1)
+/*
+ * There is a big difference between a binary semaphore and a mutex.
+ * You cannot call mutex_unlock() from IRQ context because it takes an
+ * internal mutex spin_lock in a non-IRQ-safe manner. Both try_lock()
+ * and unlock() can be called from IRQ context. A mutex must also be
+ * released in the same context that locked it.
+ */
+#define DEFINE_SEMAPHORE(_name, _n)	\
+	struct semaphore _name = __SEMAPHORE_INITIALIZER(_name, _n)
 
 static inline void sema_init(struct semaphore *sem, int val)
 {
