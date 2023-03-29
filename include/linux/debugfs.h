@@ -136,6 +136,8 @@ void debugfs_create_size_t(const char *name, umode_t mode,
 			   struct dentry *parent, size_t *value);
 void debugfs_create_atomic_t(const char *name, umode_t mode,
 			     struct dentry *parent, atomic_t *value);
+void debugfs_create_atomic64_t(const char *name, umode_t mode,
+			       struct dentry *parent, atomic64_t *value);
 void debugfs_create_bool(const char *name, umode_t mode, struct dentry *parent,
 			 bool *value);
 void debugfs_create_str(const char *name, umode_t mode,
