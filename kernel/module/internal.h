@@ -143,6 +143,41 @@ static inline bool set_livepatch_module(struct module *mod)
 #endif
 }
 
+#ifdef CONFIG_MODULE_STATS
+
+#define mod_stat_add64(count, var) atomic64_add(count, var)
+#define mod_stat_inc(name) atomic_inc(name)
+
+extern atomic64_t total_mod_size;
+extern atomic64_t total_text_size;
+extern atomic64_t invalid_kread_bytes;
+extern atomic64_t invalid_decompress_bytes;
+extern atomic64_t invalid_mod_becoming_bytes;
+extern atomic64_t invalid_mod_bytes;
+
+extern atomic_t modcount;
+extern atomic_t failed_kreads;
+extern atomic_t failed_decompress;
+extern atomic_t failed_load_modules;
+struct mod_fail_load {
+	struct list_head list;
+	char name[MODULE_NAME_LEN];
+	atomic_t count;
+};
+
+int try_add_failed_module(const char *name);
+
+#else
+
+#define mod_stat_inc64(name)
+#define mod_stat_inc(name) atomic_inc(name)
+
+static inline int try_add_failed_module(const char *name)
+{
+	return 0;
+}
+#endif /* CONFIG_MODULE_STATS */
+
 #ifdef CONFIG_MODULE_UNLOAD_TAINT_TRACKING
 struct mod_unload_taint {
 	struct list_head list;

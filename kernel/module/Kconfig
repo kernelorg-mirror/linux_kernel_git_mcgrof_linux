@@ -22,6 +22,12 @@ menuconfig MODULES
 
 if MODULES
 
+config MODULE_DEBUG
+	bool "Module debugging"
+	default n
+	help
+	  Allows to help debug module functionality.
+
 config MODULE_FORCE_LOAD
 	bool "Forced module loading"
 	default n
@@ -48,6 +54,8 @@ config MODULE_FORCE_UNLOAD
 	  rmmod).  This is mainly for kernel developers and desperate users.
 	  If unsure, say N.
 
+if MODULE_DEBUG
+
 config MODULE_UNLOAD_TAINT_TRACKING
 	bool "Tainted module unload tracking"
 	depends on MODULE_UNLOAD
@@ -58,6 +66,30 @@ config MODULE_UNLOAD_TAINT_TRACKING
 	  list of linked (or loaded) modules e.g. on detection of a bad
 	  page (see bad_page()), the aforementioned details are also
 	  shown. If unsure, say N.
+
+config MODULE_STATS
+	bool "Module statistics"
+	depends on DEBUG_FS
+	default n
+	help
+	  This option allows you to maintain a record of module statistics.
+	  For example each all modules size, average size, text size, and
+	  failed modules and the size for each of those. For failed
+	  modules we keep track of module which failed due to either the
+	  existing module taking too long to load or that module already
+	  was loaded.
+
+	  You should enable this if you are debugging production loads
+	  and want to see if userspace or the kernel is doing stupid things
+	  with loading modules when it shouldn't or if you want to help
+	  optimize userspace / kernel space module autoloading schemes.
+	  You might want to do this because failed modules tend to use
+	  use up significan amount of memory, and so you'd be doing everyone
+	  a favor in avoiding these failure proactively.
+
+	  If unsure, say N.
+
+endif # MODULE_DEBUG
 
 config MODVERSIONS
 	bool "Module versioning support"
