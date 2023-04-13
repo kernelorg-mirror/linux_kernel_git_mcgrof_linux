@@ -57,6 +57,46 @@ config MODULE_STATS
 
 	  If unsure, say N.
 
+config MODULE_AUTOLOAD_SUPRESS_DUPS
+	bool "Debug duplicate modules with auto-loading"
+	help
+	  Module autoloading allows in-kernel code to request modules through
+	  the *request_module*() API calls. This in turn just calls userspace
+	  modprobe. Although modprobe checks to see if a module is already
+	  loaded before trying to load a module there is a small time window in
+	  which multiple duplicate requests can end up in userspace and multiple
+	  modprobe calls race calling finit_module() around the same time for
+	  duplicate modules. The finit_module() system call can consume in the
+	  worst case more than twice the respective module size in virtual
+	  memory for each duplicate module requests. Although duplicate module
+	  requests are non-fatal virtual memory is a limited resource and each
+	  duplicate module request ends up just wasting virtual memory.
+
+	  This debugging facility will create WARN() splats for duplicate module
+	  requests to help identify if module auto-loading is the culprit to your
+	  woes. Since virtual memory abuse caused by duplicate module requests
+	  could render a system unusable this functionality will also suppresses
+	  the waste in virtual memory caused by duplicate requests by sharing
+	  races in requests for the same module to a single unified request.
+	  Once a non-wait request_module() call completes a module should be
+	  loaded and modprobe should simply not allow new finit_module() calls.
+
+	  Enable this functionality to try to debug virtual memory abuse during
+	  boot on systems and identify if the abuse was due to module
+	  auto-loading.
+
+	  If the first module request used request_module_nowait() we cannot
+	  use that as the anchor to wait for duplicate module requests, since
+	  users of request_module() do want a proper return value. If a call
+	  for the same module happened earlier with request_module() though,
+	  then a duplicate request_module_nowait() would be detected.
+
+	  You want to enable this if you want to debug and see if duplicate
+	  module auto-loading might be causing virtual memory abuse during
+	  bootup. A kernel trace will be provided for each duplicate request.
+
+	  Disable this if you are on production.
+
 endif # MODULE_DEBUG
 
 config MODULE_FORCE_LOAD
