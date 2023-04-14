@@ -3080,8 +3080,10 @@ SYSCALL_DEFINE3(finit_module, int, fd, const char __user *, uargs, int, flags)
 	len = kernel_read_file_from_fd(fd, 0, &buf, INT_MAX, NULL,
 				       READING_MODULE);
 	if (len < 0) {
-		mod_stat_inc(&failed_kreads);
-		mod_stat_add_long(len, &invalid_kread_bytes);
+		if (len != -EBUSY) {
+			mod_stat_inc(&failed_kreads);
+			mod_stat_add_long(len, &invalid_kread_bytes);
+		}
 		return len;
 	}
 
