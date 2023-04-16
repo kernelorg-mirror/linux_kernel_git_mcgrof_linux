@@ -1998,9 +1998,8 @@ static void __zram_make_request(struct zram *zram, struct bio *bio)
 	struct bvec_iter iter;
 	unsigned long start_time;
 
-	index = bio->bi_iter.bi_sector >> SECTORS_PER_PAGE_SHIFT;
-	offset = (bio->bi_iter.bi_sector &
-		  (SECTORS_PER_PAGE - 1)) << SECTOR_SHIFT;
+	index = bio->bi_iter.bi_sector >> PAGE_SECTORS_SHIFT;
+	offset = (bio->bi_iter.bi_sector & (PAGE_SECTORS - 1)) << SECTOR_SHIFT;
 
 	switch (bio_op(bio)) {
 	case REQ_OP_DISCARD:
