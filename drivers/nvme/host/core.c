@@ -1911,6 +1911,7 @@ static void nvme_update_disk_info(struct gendisk *disk,
 	sector_t capacity = nvme_lba_to_sect(ns, le64_to_cpu(id->nsze));
 	u32 bs = 1U << ns->lba_shift;
 	u32 atomic_bs, phys_bs, io_opt = 0;
+	u32 awun = 0, awun_bs = 0;
 
 	if (!nvme_lba_shift_supported(ns)) {
 		capacity = 0;
@@ -1931,6 +1932,15 @@ static void nvme_update_disk_info(struct gendisk *disk,
 			atomic_bs = (1 + le16_to_cpu(id->nawupf)) * bs;
 		else
 			atomic_bs = (1 + ns->ctrl->subsys->awupf) * bs;
+		if (id->nsfeat & NVME_NS_FEAT_ATOMICS && id->nawun)
+			awun = (1 + le16_to_cpu(id->nawun));
+		else
+			awun = (1 + ns->ctrl->subsys->awun);
+		/* Indicates MDTS can be used */
+		if (awun == 0xffff)
+			awun_bs = ns->ctrl->max_hw_sectors << SECTOR_SHIFT;
+		else
+			awun_bs = awun * bs;
 	}
 
 	if (id->nsfeat & NVME_NS_FEAT_IO_OPT) {
@@ -1938,6 +1948,16 @@ static void nvme_update_disk_info(struct gendisk *disk,
 		phys_bs = bs * (1 + le16_to_cpu(id->npwg));
 		/* NOWS = Namespace Optimal Write Size */
 		io_opt = bs * (1 + le16_to_cpu(id->nows));
+	}
+
+	if (awun) {
+		phys_bs = min(awun_bs, phys_bs);
+
+		/*
+		 * npwg and nows could be > awun, in such cases users should
+		 * be aware of out of order reads/writes as npwg and nows
+		 * are purely performance optimizations.
+		 */
 	}
 
 	blk_queue_logical_block_size(disk->queue, bs);
@@ -2801,6 +2821,7 @@ static int nvme_init_subsystem(struct nvme_ctrl *ctrl, struct nvme_id_ctrl *id)
 		kfree(subsys);
 		return -EINVAL;
 	}
+	subsys->awun = le16_to_cpu(id->awun);
 	subsys->awupf = le16_to_cpu(id->awupf);
 	nvme_mpath_default_iopolicy(subsys);
 
