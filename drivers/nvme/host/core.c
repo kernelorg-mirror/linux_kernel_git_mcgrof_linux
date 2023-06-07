@@ -93,6 +93,10 @@ static bool debug_large_lbas;
 module_param(debug_large_lbas, bool, 0644);
 MODULE_PARM_DESC(debug_large_lbas, "allow LBAs > PAGE_SIZE");
 
+static unsigned int debug_large_atomics;
+module_param(debug_large_atomics, uint, 0644);
+MODULE_PARM_DESC(debug_large_atomics, "allow large atomics <= awun or nawun <= mdts");
+
 /*
  * nvme_wq - hosts nvme related works that are not reset or delete
  * nvme_reset_wq - hosts nvme reset works
@@ -2000,6 +2004,18 @@ static void nvme_update_disk_info(struct nvme_ctrl *ctrl, struct gendisk *disk,
 		 * be aware of out of order reads/writes as npwg and nows
 		 * are purely performance optimizations.
 		 */
+
+		/*
+		 * If you're not concerned about power failure, in theory,
+		 * you should be able to experiment up to awun rather safely.
+		 */
+		if (debug_large_atomics) {
+			debug_large_atomics = debug_large_atomics;
+			phys_bs = atomic_bs = debug_large_atomics;
+			dev_info(ctrl->device,
+				 "Forcing large atomic: %u (awun_bs: %u awun: %u)\n",
+				 debug_large_atomics, awun_bs, awun);
+		}
 	}
 
 	blk_queue_logical_block_size(disk->queue, bs);
