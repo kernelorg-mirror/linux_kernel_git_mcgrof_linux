@@ -392,7 +392,11 @@ struct block_device *bdev_alloc(struct gendisk *disk, u8 partno)
 		return NULL;
 	inode->i_mode = S_IFBLK;
 	inode->i_rdev = 0;
+#ifdef CONFIG_BUFFER_HEAD
 	inode->i_data.a_ops = &def_blk_aops;
+#else
+	inode->i_data.a_ops = &def_blk_aops_iomap;
+#endif
 	mapping_set_gfp_mask(&inode->i_data, GFP_USER);
 
 	bdev = I_BDEV(inode);

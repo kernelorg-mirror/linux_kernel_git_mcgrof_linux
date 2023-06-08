@@ -455,13 +455,14 @@ const struct address_space_operations def_blk_aops = {
 	.migrate_folio	= buffer_migrate_folio_norefs,
 	.is_dirty_writeback = buffer_check_dirty_writeback,
 };
-#else /* CONFIG_BUFFER_HEAD */
-static int blkdev_read_folio(struct file *file, struct folio *folio)
+
+#endif /* CONFIG_BUFFER_HEAD */
+static int blkdev_read_folio_iomap(struct file *file, struct folio *folio)
 {
 	return iomap_read_folio(folio, &blkdev_iomap_ops);
 }
 
-static void blkdev_readahead(struct readahead_control *rac)
+static void blkdev_readahead_iomap(struct readahead_control *rac)
 {
 	iomap_readahead(rac, &blkdev_iomap_ops);
 }
@@ -492,18 +493,17 @@ static int blkdev_writepages(struct address_space *mapping,
 	return iomap_writepages(mapping, wbc, &wpc, &blkdev_writeback_ops);
 }
 
-const struct address_space_operations def_blk_aops = {
+const struct address_space_operations def_blk_aops_iomap = {
 	.dirty_folio	= filemap_dirty_folio,
 	.release_folio		= iomap_release_folio,
 	.invalidate_folio	= iomap_invalidate_folio,
-	.read_folio		= blkdev_read_folio,
-	.readahead		= blkdev_readahead,
+	.read_folio		= blkdev_read_folio_iomap,
+	.readahead		= blkdev_readahead_iomap,
 	.writepages		= blkdev_writepages,
 	.is_partially_uptodate  = iomap_is_partially_uptodate,
 	.error_remove_page	= generic_error_remove_page,
 	.migrate_folio		= filemap_migrate_folio,
 };
-#endif /* CONFIG_BUFFER_HEAD */
 
 /*
  * for a block special file file_inode(file)->i_size is zero
