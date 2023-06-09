@@ -1931,9 +1931,6 @@ static bool nvme_lba_shift_supported(struct nvme_ns_head *head,
 	if (head->lba_shift <= PAGE_SHIFT)
 		return true;
 
-	if (IS_ENABLED(CONFIG_BUFFER_HEAD))
-		return false;
-
 	if (head->lba_shift <= NVME_MAX_SHIFT_SUPPORTED)
 		return true;
 
