@@ -143,10 +143,17 @@ static void set_init_blocksize(struct block_device *bdev)
 	}
 }
 
+static int bdev_bsize_limit(struct block_device *bdev)
+{
+	if (bdev->bd_inode->i_data.a_ops == &def_blk_aops_iomap)
+		return 1 << (PAGE_SHIFT + MAX_PAGECACHE_ORDER);
+	return PAGE_SIZE;
+}
+
 int set_blocksize(struct block_device *bdev, int size)
 {
-	/* Size must be a power of two, and between 512 and PAGE_SIZE */
-	if (size > PAGE_SIZE || size < 512 || !is_power_of_2(size))
+	/* Size must be a power of two, and between 512 and supported order */
+	if (size > bdev_bsize_limit(bdev) || size < 512 || !is_power_of_2(size))
 		return -EINVAL;
 
 	/* Size cannot be smaller than the size supported by the device */
