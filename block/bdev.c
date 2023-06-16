@@ -150,6 +150,59 @@ static int bdev_bsize_limit(struct block_device *bdev)
 	return PAGE_SIZE;
 }
 
+#ifdef CONFIG_BUFFER_HEAD
+static void bdev_aops_set(struct block_device *bdev,
+			  const struct address_space_operations *aops)
+{
+	kill_bdev(bdev);
+	bdev->bd_inode->i_data.a_ops = aops;
+}
+
+static void bdev_aops_sync(struct super_block *sb, struct block_device *bdev,
+			   const struct address_space_operations *aops)
+{
+	sync_blockdev(bdev);
+	bdev_aops_set(bdev, aops);
+	kill_bdev(bdev);
+	bdev->bd_inode->i_data.a_ops = aops;
+}
+
+void bdev_aops_reset(struct block_device *bdev)
+{
+	bdev_aops_set(bdev, &def_blk_aops);
+}
+
+static int sb_bdev_aops_set(struct super_block *sb)
+{
+	struct block_device *bdev = sb->s_bdev;
+
+	if (mapping_min_folio_order(bdev->bd_inode->i_mapping) != 0 &&
+	    sb->s_type->fs_flags & FS_BUFFER_HEADS) {
+			pr_warn_ratelimited(
+"block device logical block size > PAGE_SIZE, buffer-head filesystem cannot be used.\n");
+		return -EINVAL;
+	}
+
+	/*
+	 * We can switch back and forth, but we need to use buffer-heads
+	 * first, otherwise a filesystem created which only uses iomap
+	 * will have it sticky and we can't detect buffer-head filesystems
+	 * on mount.
+	 */
+	bdev_aops_sync(sb, bdev, &def_blk_aops);
+	if (sb->s_type->fs_flags & FS_BUFFER_HEADS)
+		return 0;
+
+	bdev_aops_sync(sb, bdev, &def_blk_aops_iomap);
+	return 0;
+}
+#else
+static int sb_bdev_aops_set(struct super_block *sb)
+{
+	return 0;
+}
+#endif
+
 int set_blocksize(struct block_device *bdev, int size)
 {
 	/* Size must be a power of two, and between 512 and supported order */
@@ -173,6 +226,8 @@ EXPORT_SYMBOL(set_blocksize);
 
 int sb_set_blocksize(struct super_block *sb, int size)
 {
+	if (sb_bdev_aops_set(sb))
+		return 0;
 	if (set_blocksize(sb->s_bdev, size))
 		return 0;
 	/* If we get here, we know size is power of two
