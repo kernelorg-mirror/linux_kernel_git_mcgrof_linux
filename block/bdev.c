@@ -143,13 +143,6 @@ static void set_init_blocksize(struct block_device *bdev)
 	}
 }
 
-static int bdev_bsize_limit(struct block_device *bdev)
-{
-	if (bdev->bd_inode->i_data.a_ops == &def_blk_aops_iomap)
-		return 1 << (PAGE_SHIFT + MAX_PAGECACHE_ORDER);
-	return PAGE_SIZE;
-}
-
 #ifdef CONFIG_BUFFER_HEAD
 static void bdev_aops_set(struct block_device *bdev,
 			  const struct address_space_operations *aops)
@@ -205,8 +198,10 @@ static int sb_bdev_aops_set(struct super_block *sb)
 
 int set_blocksize(struct block_device *bdev, int size)
 {
+	unsigned int bdev_size_limit = 1 << (PAGE_SHIFT + MAX_PAGECACHE_ORDER);
+
 	/* Size must be a power of two, and between 512 and supported order */
-	if (size > bdev_bsize_limit(bdev) || size < 512 || !is_power_of_2(size))
+	if (size > bdev_size_limit || size < 512 || !is_power_of_2(size))
 		return -EINVAL;
 
 	/* Size cannot be smaller than the size supported by the device */
