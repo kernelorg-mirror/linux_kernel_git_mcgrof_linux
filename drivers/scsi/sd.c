@@ -98,6 +98,10 @@ MODULE_ALIAS_SCSI_DEVICE(TYPE_MOD);
 MODULE_ALIAS_SCSI_DEVICE(TYPE_RBC);
 MODULE_ALIAS_SCSI_DEVICE(TYPE_ZBC);
 
+static unsigned int debug_large_atomics;
+module_param(debug_large_atomics, uint, 0644);
+MODULE_PARM_DESC(debug_large_atomics, "allow large atomics in blocksize");
+
 #define SD_MINORS	16
 
 static void sd_config_discard(struct scsi_disk *, unsigned int);
@@ -967,6 +971,7 @@ static void sd_config_atomic(struct scsi_disk *sdkp)
 			return;
 	}
 
+	/* XXX: this is not on the upstream commit but probably should */
 	blk_queue_physical_block_size(q, max_atomic * logical_block_size);
 }
 
@@ -2573,6 +2578,11 @@ static int read_capacity_16(struct scsi_disk *sdkp, struct scsi_device *sdp,
 
 	/* Logical blocks per physical block exponent */
 	sdkp->physical_block_size = (1 << (buffer[13] & 0xf)) * sector_size;
+	if (debug_large_atomics) {
+		dev_info(&sdkp->disk_dev,
+			 "Forcing large atomic: %u\n", debug_large_atomics);
+		sdkp->physical_block_size = debug_large_atomics;
+	}
 
 	/* RC basis */
 	sdkp->rc_basis = (buffer[12] >> 4) & 0x3;
