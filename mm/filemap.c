@@ -3534,6 +3534,13 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 	struct folio *folio;
 	vm_fault_t ret = 0;
 	unsigned int nr_pages = 0, mmap_miss = 0, mmap_miss_saved;
+	struct inode *inode = mapping->host;
+	pgoff_t max_zeroed;
+
+	max_zeroed = DIV_ROUND_UP(i_size_read(inode), PAGE_SIZE);
+	if (unlikely(start_pgoff >= max_zeroed) || end_pgoff >= max_zeroed)
+		return VM_FAULT_SIGBUS;
+
 
 	rcu_read_lock();
 	folio = next_uptodate_folio(&xas, mapping, end_pgoff);
