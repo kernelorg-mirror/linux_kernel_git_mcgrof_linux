@@ -3614,11 +3614,20 @@ static ssize_t split_huge_pages_write(struct file *file, const char __user *buf,
 		char file_path[MAX_INPUT_BUF_SZ];
 		pgoff_t off_start = 0, off_end = 0;
 		size_t input_len = strlen(input_buf);
+		size_t max_left_over;
 
 		tok = strsep(&buf, ",");
 		if (tok) {
 			strcpy(file_path, tok);
 		} else {
+			ret = -EINVAL;
+			goto out;
+		}
+
+		max_left_over = MAX_INPUT_BUF_SZ - strlen(file_path);
+		if (!buf ||
+		    strnlen(buf, max_left_over) < (sizeof("0xN,0xN") - 1) ||
+		    strnlen(buf, max_left_over) > max_left_over) {
 			ret = -EINVAL;
 			goto out;
 		}
