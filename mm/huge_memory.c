@@ -3526,7 +3526,7 @@ static int split_huge_pages_in_file(const char *file_path, pgoff_t off_start,
 	struct file *candidate;
 	struct address_space *mapping;
 	int ret = -EINVAL;
-	pgoff_t index;
+	pgoff_t index, fsize;
 	int nr_pages = 1;
 	unsigned long total = 0, split = 0;
 
@@ -3538,10 +3538,13 @@ static int split_huge_pages_in_file(const char *file_path, pgoff_t off_start,
 	if (IS_ERR(candidate))
 		goto out;
 
+	mapping = candidate->f_mapping;
+	fsize = i_size_read(mapping->host);
+	if (off_end > fsize)
+		off_end = fsize;
+
 	pr_debug("split file-backed THPs in file: %s, page offset: [0x%lx - 0x%lx]\n",
 		 file_path, off_start, off_end);
-
-	mapping = candidate->f_mapping;
 
 	for (index = off_start; index < off_end; index += nr_pages) {
 		struct folio *folio = filemap_get_folio(mapping, index);
