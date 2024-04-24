@@ -2385,6 +2385,7 @@ static bool folio_prepare_writeback(struct address_space *mapping,
 		folio_wait_writeback(folio);
 	}
 	BUG_ON(folio_test_writeback(folio));
+	BUG_ON(folio->mapping != mapping);
 
 	if (!folio_clear_dirty_for_io(folio))
 		return false;
