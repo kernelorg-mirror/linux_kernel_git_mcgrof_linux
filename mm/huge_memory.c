@@ -3055,8 +3055,17 @@ int split_huge_page_to_list_to_order(struct page *page, struct list_head *list,
 	if (new_order >= folio_order(folio))
 		return -EINVAL;
 
-	/* Cannot split anonymous THP to order-1 */
-	if (new_order == 1 && folio_test_anon(folio)) {
+	if (folio_test_writeback(folio))
+		return -EBUSY;
+
+	if (!folio_test_anon(folio)) {
+		/* Truncated ? */
+		if (!folio->mapping) {
+			ret = -EBUSY;
+			goto out;
+		}
+	} else if (new_order == 1) {
+		/* Cannot split anonymous THP to order-1 */
 		VM_WARN_ONCE(1, "Cannot split to order-1 folio");
 		return -EINVAL;
 	}
@@ -3079,15 +3088,11 @@ int split_huge_page_to_list_to_order(struct page *page, struct list_head *list,
 		}
 	}
 
-
 	is_hzp = is_huge_zero_page(&folio->page);
 	if (is_hzp) {
 		pr_warn_ratelimited("Called split_huge_page for huge zero page\n");
 		return -EBUSY;
 	}
-
-	if (folio_test_writeback(folio))
-		return -EBUSY;
 
 	if (folio_test_anon(folio)) {
 		/*
@@ -3110,12 +3115,6 @@ int split_huge_page_to_list_to_order(struct page *page, struct list_head *list,
 		gfp_t gfp;
 
 		mapping = folio->mapping;
-
-		/* Truncated ? */
-		if (!mapping) {
-			ret = -EBUSY;
-			goto out;
-		}
 
 		gfp = current_gfp_context(mapping_gfp_mask(mapping) &
 							GFP_RECLAIM_MASK);
