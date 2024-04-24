@@ -3035,6 +3035,9 @@ bool can_split_folio(struct folio *folio, int *pextra_pins)
  * Returns 0 if the hugepage is split successfully.
  * Returns -EBUSY if the page is pinned or if anon_vma disappeared from under
  * us.
+ *
+ * Callers should ensure that the order respects the address space mapping
+ * min-order if one is set.
  */
 int split_huge_page_to_list_to_order(struct page *page, struct list_head *list,
 				     unsigned int new_order)
@@ -3059,9 +3062,17 @@ int split_huge_page_to_list_to_order(struct page *page, struct list_head *list,
 		return -EBUSY;
 
 	if (!folio_test_anon(folio)) {
+		unsigned int min_order;
 		/* Truncated ? */
 		if (!folio->mapping) {
 			ret = -EBUSY;
+			goto out;
+		}
+		min_order = mapping_min_folio_order(folio->mapping);
+		if (new_order < min_order) {
+			VM_WARN_ONCE(1, "Cannot split mapped folio below min-order: %u",
+				     min_order);
+			ret = -EINVAL;
 			goto out;
 		}
 	} else if (new_order == 1) {
@@ -3224,6 +3235,16 @@ out:
 	xas_destroy(&xas);
 	count_vm_event(!ret ? THP_SPLIT_PAGE : THP_SPLIT_PAGE_FAILED);
 	return ret;
+}
+
+int split_folio_to_list(struct folio *folio, struct list_head *list)
+{
+	unsigned int min_order = 0;
+
+	if (!folio_test_anon(folio))
+		min_order = mapping_min_folio_order(folio->mapping);
+
+	return split_huge_page_to_list_to_order(&folio->page, list, min_order);
 }
 
 void folio_undo_large_rmappable(struct folio *folio)
@@ -3488,6 +3509,15 @@ static int split_huge_pages_pid(int pid, unsigned long vaddr_start,
 		if (new_order >= folio_order(folio))
 			goto next;
 
+		if (!folio_test_anon(folio)) {
+			unsigned int min_order = mapping_min_folio_order(folio->mapping);
+			if (min_order > new_order) {
+				pr_debug("cannot split below min_order: %u\n",
+					 min_order);
+				goto next;
+			}
+		}
+
 		total++;
 		/*
 		 * For folios with private, split_huge_page_to_list_to_order()
@@ -3528,6 +3558,7 @@ static int split_huge_pages_in_file(const char *file_path, pgoff_t off_start,
 	pgoff_t index, fsize;
 	int nr_pages = 1;
 	unsigned long total = 0, split = 0;
+	unsigned int min_order;
 
 	file = getname_kernel(file_path);
 	if (IS_ERR(file))
@@ -3542,8 +3573,12 @@ static int split_huge_pages_in_file(const char *file_path, pgoff_t off_start,
 	if (off_end > fsize)
 		off_end = fsize;
 
-	pr_debug("split file-backed THPs in file: %s, page offset: [0x%lx - 0x%lx]\n",
-		 file_path, off_start, off_end);
+	min_order = mapping_min_folio_order(mapping);
+	if (new_order < min_order)
+		new_order = min_order;
+
+	pr_debug("split file-backed THPs in file: %s, page offset: [0x%lx - 0x%lx] with order: %u\n",
+		 file_path, off_start, off_end, new_order);
 
 	for (index = off_start; index < off_end; index += nr_pages) {
 		struct folio *folio = filemap_get_folio(mapping, index);
