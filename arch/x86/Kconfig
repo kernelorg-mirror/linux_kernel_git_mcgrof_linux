@@ -7,6 +7,14 @@ config 64BIT
 	  Say yes to build a 64-bit kernel - formerly known as x86_64
 	  Say no to build a 32-bit kernel - formerly known as i386
 
+config WANTS_EXECMEM_ALLOC
+	bool "Enable execmem_alloc()"
+	default y
+	depends on X86_64
+	help
+	  Say no here to test what the world is like without sharing huge pages
+	  for a cache for execmem_alloc().
+
 config X86_32
 	def_bool y
 	depends on !64BIT
@@ -83,7 +91,7 @@ config X86
 	select ARCH_HAS_DMA_OPS			if GART_IOMMU || XEN
 	select ARCH_HAS_EARLY_DEBUG		if KGDB
 	select ARCH_HAS_ELF_RANDOMIZE
-	select ARCH_HAS_EXECMEM_ROX		if X86_64
+	select ARCH_HAS_EXECMEM_ROX		if WANTS_EXECMEM_ALLOC
 	select ARCH_HAS_FAST_MULTIPLIER
 	select ARCH_HAS_FORTIFY_SOURCE
 	select ARCH_HAS_GCOV_PROFILE_ALL
