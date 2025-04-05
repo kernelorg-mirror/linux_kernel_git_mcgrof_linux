@@ -43,6 +43,7 @@
 #include <linux/sched/sysctl.h>
 #include <linux/memory-tiers.h>
 #include <linux/pagewalk.h>
+#include <linux/debugfs.h>
 
 #include <asm/tlbflush.h>
 
@@ -838,11 +839,72 @@ EXPORT_SYMBOL(folio_migrate_flags);
  *                    Migration functions
  ***********************************************************/
 
+#define NUM_MIGRATE_STATS 2
+static atomic_long_t stat_migrate_folio;
+static atomic_long_t stat_migrate_folio_success;
+
+static ssize_t read_file_migrate_stats(struct file *file,
+				       char __user *user_buf,
+				       size_t count, loff_t *ppos)
+{
+	char *buf;
+	unsigned int len = 0, size = NUM_MIGRATE_STATS * 128;
+	int ret;
+	unsigned long calls, success, rate;
+
+	buf = kzalloc(size, GFP_KERNEL);
+	if (buf == NULL)
+		return -ENOMEM;
+
+	calls = atomic_long_read(&stat_migrate_folio);
+	success = atomic_long_read(&stat_migrate_folio_success);
+
+	len += scnprintf(buf + len, size - len, "\n[%s]\n",
+			 "migrate_folio");
+	len += scnprintf(buf + len, size - len, "%25s\t%lu\n",
+			 "calls", calls);
+	len += scnprintf(buf + len, size - len, "%25s\t%lu\n",
+			 "success", success);
+
+	rate = calls ? (success * 100) / calls : 0;
+	len += scnprintf(buf + len, size - len,
+		"migrate_folio: %lu%% success (%lu/%lu)\n",
+		rate, success, calls);
+
+	ret = simple_read_from_buffer(user_buf, count, ppos, buf, len);
+	kfree(buf);
+	return ret;
+}
+
+static const struct file_operations fops_migrate_stats = {
+	.read = read_file_migrate_stats,
+	.open = simple_open,
+	.owner = THIS_MODULE,
+	.llseek = default_llseek,
+};
+
+static void mm_migrate_stats_init(struct dentry *root)
+{
+	debugfs_create_ulong("migrate_folio", 0400,
+		                     root,
+		                     (unsigned long *)
+				     &stat_migrate_folio);
+	debugfs_create_ulong("migrate_folio_success", 0400,
+		                     root,
+		                     (unsigned long *)
+				     &stat_migrate_folio_success);
+
+	debugfs_create_file("stats", 0400, root, root, &fops_migrate_stats);
+}
+
+
 static int __migrate_folio(struct address_space *mapping, struct folio *dst,
 			   struct folio *src, void *src_private,
 			   enum migrate_mode mode)
 {
 	int rc, expected_count = folio_expected_ref_count(src) + 1;
+
+	atomic_long_inc(&stat_migrate_folio);
 
 	/* Check whether src does not have extra refs before we do more work */
 	if (folio_ref_count(src) != expected_count)
@@ -860,6 +922,7 @@ static int __migrate_folio(struct address_space *mapping, struct folio *dst,
 		folio_attach_private(dst, folio_detach_private(src));
 
 	folio_migrate_flags(dst, src);
+	atomic_long_inc(&stat_migrate_folio_success);
 	return MIGRATEPAGE_SUCCESS;
 }
 
@@ -2737,3 +2800,17 @@ int migrate_misplaced_folio(struct folio *folio, int node)
 }
 #endif /* CONFIG_NUMA_BALANCING */
 #endif /* CONFIG_NUMA */
+
+static __init int mm_migrate_debugfs_init(void)
+{
+	struct dentry *mm_debug_root;
+	struct dentry *migrate_debug_root;
+
+	mm_debug_root = debugfs_create_dir("mm", NULL);
+	migrate_debug_root = debugfs_create_dir("migrate", mm_debug_root);
+
+	mm_migrate_stats_init(migrate_debug_root);
+
+	return 0;
+}
+fs_initcall(mm_migrate_debugfs_init);
