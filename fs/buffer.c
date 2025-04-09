@@ -50,6 +50,7 @@
 #include <linux/fscrypt.h>
 #include <linux/fsverity.h>
 #include <linux/sched/isolation.h>
+#include <linux/delay.h>
 
 #include "internal.h"
 
@@ -204,6 +205,7 @@ __find_get_block_slow(struct block_device *bdev, sector_t block)
 	if (IS_ERR(folio))
 		goto out;
 
+	udelay(2000);
 	spin_lock(&bd_mapping->i_private_lock);
 	head = folio_buffers(folio);
 	if (!head)
