@@ -841,6 +841,9 @@ static int __buffer_migrate_folio(struct address_space *mapping,
 	if (folio_ref_count(src) != expected_count)
 		return -EAGAIN;
 
+	if (buffer_meta(head))
+		return -EAGAIN;
+
 	if (!buffer_migrate_lock_buffers(head, mode))
 		return -EAGAIN;
 
@@ -881,7 +884,6 @@ recheck_buffers:
 		folio_set_bh(bh, dst, bh_offset(bh));
 		bh = bh->b_this_page;
 	} while (bh != head);
-
 unlock_buffers:
 	if (check_refs) {
 		spin_lock(&mapping->i_private_lock);
