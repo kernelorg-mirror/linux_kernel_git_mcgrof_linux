@@ -805,7 +805,7 @@ static const char * const bh_routine_names[] = {
 	X(bh_migrate_folio_norefs, 1, "calls")				       \
 	X(bh_migrate_folio_norefs_success, 1, "success")		       \
 	X(bh_migrate_folio_norefs_fails, 1, "fails")			       \
-	X(bh_migrate_folio_norefs_meta, 1, "meta-fail")			       \
+	X(bh_migrate_folio_norefs_meta, 1, "jbd-meta")			       \
 	X(bh_migrate_folio_norefs_nohead_success, 1, "no-head-success")	       \
 	X(bh_migrate_folio_norefs_nohead_fails, 1, "no-head-fails")	       \
 	X(bh_migrate_folio_norefs_invalid, 1, "invalid")		       \
@@ -971,7 +971,7 @@ static int __buffer_migrate_folio(struct address_space *mapping,
 		return -EAGAIN;
 
 	if (buffer_meta(head)) {
-		atomic_long_inc(&bh_migrate_folio_norefs_fails);
+		atomic_long_inc(&bh_migrate_folio_norefs_meta);
 		return -EAGAIN;
 	}
 
