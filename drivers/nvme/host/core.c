@@ -105,6 +105,17 @@ MODULE_PARM_DESC(disable_pi_offsets,
 	"disable protection information if it has an offset");
 
 /*
+ * A drive with atomic write support should have awun / nawun defined, for these
+ * drives it should be possible to play with and experiment safely with large
+ * atomics up to awun / nawun settings *iff* you are completely ignoring power
+ * failure situations. The rationale to limit to awun / nawun is to avoid races
+ * with other on flight commands which otherwise could cause unexpected results.
+ */
+static unsigned int debug_large_atomics;
+module_param(debug_large_atomics, uint, 0644);
+MODULE_PARM_DESC(debug_large_atomics, "allow large atomics <= awun or nawun <= mdts");
+
+/*
  * nvme_wq - hosts nvme related works that are not reset or delete
  * nvme_reset_wq - hosts nvme reset works
  * nvme_delete_wq - hosts nvme delete works
@@ -2008,6 +2019,9 @@ static void nvme_update_atomic_write_disk_info(struct nvme_ns *ns,
 			boundary = (le16_to_cpu(id->nabspf) + 1) * bs;
 	}
 
+	if (debug_large_atomics && awun_bs >= debug_large_atomics)
+		boundary = min(atomic_bs, awun_bs);
+
 	if (awun_bs) {
 		atomic_bs = min(atomic_bs, awun_bs);
 		boundary = min(boundary, awun_bs);
@@ -2078,6 +2092,19 @@ static bool nvme_update_disk_info(struct nvme_ns *ns, struct nvme_id_ns *id,
 		else
 			atomic_bs = (1 + ns->ctrl->subsys->awupf) * bs;
 
+		if (debug_large_atomics && awun_bs >= debug_large_atomics) {
+			atomic_bs = min(debug_large_atomics, awun_bs);
+			add_taint(TAINT_TEST, LOCKDEP_STILL_OK);
+			dev_info(ns->ctrl->device,
+				 "Forcing large atomic: %u (awun_bs: %u awun: %u)\n",
+				 debug_large_atomics, awun_bs, awun);
+		} else if (debug_large_atomics) {
+			dev_info(ns->ctrl->device,
+				 "Disired large atomic: %u is smaller than awun. Ignoring. (awun_bs: %u awun: %u)\n",
+				 debug_large_atomics, awun_bs, awun);
+			debug_large_atomics = 0;
+		}
+
 		nvme_update_atomic_write_disk_info(ns, id, lim, bs, atomic_bs,
 						   awun_bs);
 	}
@@ -2085,6 +2112,9 @@ static bool nvme_update_disk_info(struct nvme_ns *ns, struct nvme_id_ns *id,
 	if (id->nsfeat & NVME_NS_FEAT_IO_OPT) {
 		/* NPWG = Namespace Preferred Write Granularity */
 		phys_bs = bs * (1 + le16_to_cpu(id->npwg));
+		/* This enables you to experiment with large fs sector sizes */
+		if (debug_large_atomics &&  awun_bs > debug_large_atomics)
+			phys_bs = min(debug_large_atomics, awun_bs);
 		/* NOWS = Namespace Optimal Write Size */
 		if (id->nows)
 			io_opt = bs * (1 + le16_to_cpu(id->nows));
