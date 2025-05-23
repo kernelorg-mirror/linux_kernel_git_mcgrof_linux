@@ -1993,6 +1993,127 @@ TEST_F(iommufd_mock_domain, alloc_hwpt)
 	}
 }
 
+FIXTURE(iommufd_dma_engine)
+{
+	int fd;
+	uint32_t ioas_id;
+	uint32_t stdev_id;
+	uint32_t hwpt_id;
+	uint32_t idev_id;
+	void *buffer;
+};
+
+FIXTURE_SETUP(iommufd_dma_engine)
+{
+	self->fd = open("/dev/iommu", O_RDWR);
+	ASSERT_NE(-1, self->fd);
+	test_ioctl_ioas_alloc(&self->ioas_id);
+
+	/* Create single domain with DMA engine support */
+	test_cmd_mock_domain_flags(self->ioas_id,
+				   MOCK_FLAGS_DEVICE_DMA_ENGINE,
+				   &self->stdev_id,
+				   &self->hwpt_id,
+				   &self->idev_id);
+
+	self->buffer = mmap(0, BUFFER_SIZE, PROT_READ | PROT_WRITE,
+			    MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	ASSERT_NE(MAP_FAILED, self->buffer);
+}
+
+FIXTURE_TEARDOWN(iommufd_dma_engine)
+{
+	munmap(self->buffer, BUFFER_SIZE);
+	close(self->fd);
+}
+
+
+TEST_F(iommufd_dma_engine, dma_engine_basic)
+{
+	struct iommu_test_cmd cmd = {
+		.size = sizeof(cmd),
+		.op = IOMMU_TEST_OP_DMA_PREP_MEMCPY,
+		.id = self->stdev_id,
+		.dma_memcpy = {
+			.chan_id = 0,
+			.src_addr = MOCK_APERTURE_START,
+			.dst_addr = MOCK_APERTURE_START + PAGE_SIZE,
+			.len = PAGE_SIZE,
+			.flags = 0,
+		}
+	};
+
+	/* Map source and destination buffers through IOMMU */
+	test_ioctl_ioas_map_fixed(self->buffer, PAGE_SIZE, MOCK_APERTURE_START);
+	test_ioctl_ioas_map_fixed(self->buffer + PAGE_SIZE, PAGE_SIZE,
+				  MOCK_APERTURE_START + PAGE_SIZE);
+
+	memset(self->buffer, 0xAA, PAGE_SIZE);
+	memset(self->buffer + PAGE_SIZE, 0x00, PAGE_SIZE);
+
+	/* Execute DMA memcpy operation */
+	ASSERT_EQ(0, ioctl(self->fd,
+			   _IOMMU_TEST_CMD(IOMMU_TEST_OP_DMA_PREP_MEMCPY),
+			   &cmd));
+
+	/* Wait for DMA completion */
+	usleep(1000);
+
+	/* Verify data was copied correctly */
+	ASSERT_EQ(0, memcmp(self->buffer, self->buffer + PAGE_SIZE, PAGE_SIZE));
+
+	test_ioctl_ioas_unmap(MOCK_APERTURE_START, PAGE_SIZE);
+	test_ioctl_ioas_unmap(MOCK_APERTURE_START + PAGE_SIZE, PAGE_SIZE);
+}
+
+TEST_F(iommufd_dma_engine, dma_multiple_channels)
+{
+	const int num_ops = 4;
+	struct iommu_test_cmd cmds[num_ops];
+	int i;
+
+	/* Setup multiple simultaneous DMA operations */
+	test_ioctl_ioas_map_fixed(self->buffer, PAGE_SIZE * num_ops * 2,
+				  MOCK_APERTURE_START);
+
+	for (i = 0; i < num_ops; i++) {
+		/* Fill each source with unique pattern */
+		memset(self->buffer + i * PAGE_SIZE, 0x10 + i, PAGE_SIZE);
+		memset(self->buffer + (num_ops + i) * PAGE_SIZE, 0x00, PAGE_SIZE);
+
+		cmds[i] = (struct iommu_test_cmd) {
+			.size = sizeof(cmds[i]),
+			.op = IOMMU_TEST_OP_DMA_PREP_MEMCPY,
+			.id = self->stdev_id, // Use fixture domain
+			.dma_memcpy = {
+				.chan_id = i % MOCK_MAX_DMA_CHANNELS,
+				.src_addr = MOCK_APERTURE_START + i * PAGE_SIZE,
+				.dst_addr = MOCK_APERTURE_START +
+					    (num_ops + i) * PAGE_SIZE,
+				.len = PAGE_SIZE,
+				.flags = 0,
+			}
+		};
+
+		/* Submit all operations */
+		ASSERT_EQ(0, ioctl(self->fd,
+				   _IOMMU_TEST_CMD(IOMMU_TEST_OP_DMA_PREP_MEMCPY),
+				   &cmds[i]));
+	}
+
+	/* Wait for all to complete */
+	usleep(5000);
+
+	/* Verify all transfers */
+	for (i = 0; i < num_ops; i++) {
+		ASSERT_EQ(0, memcmp(self->buffer + i * PAGE_SIZE,
+				    self->buffer + (num_ops + i) * PAGE_SIZE,
+				    PAGE_SIZE));
+	}
+
+	test_ioctl_ioas_unmap(MOCK_APERTURE_START, PAGE_SIZE * num_ops * 2);
+}
+
 FIXTURE(iommufd_dirty_tracking)
 {
 	int fd;

@@ -29,6 +29,15 @@ enum {
 	IOMMU_TEST_OP_PASID_REPLACE,
 	IOMMU_TEST_OP_PASID_DETACH,
 	IOMMU_TEST_OP_PASID_CHECK_HWPT,
+	IOMMU_TEST_OP_DMA_ALLOC_CHANNEL,
+	IOMMU_TEST_OP_DMA_PREP_MEMCPY,
+	IOMMU_TEST_OP_DMA_SUBMIT,
+	IOMMU_TEST_OP_DMA_SYNC_WAIT,
+	IOMMU_TEST_OP_DMA_CHECK_COMPLETION,
+};
+
+enum {
+	MOCK_MAX_DMA_CHANNELS = 20,
 };
 
 enum {
@@ -54,6 +63,7 @@ enum {
 	MOCK_FLAGS_DEVICE_NO_DIRTY = 1 << 0,
 	MOCK_FLAGS_DEVICE_HUGE_IOVA = 1 << 1,
 	MOCK_FLAGS_DEVICE_PASID = 1 << 2,
+	MOCK_FLAGS_DEVICE_DMA_ENGINE = 1 << 3,
 };
 
 enum {
@@ -176,6 +186,14 @@ struct iommu_test_cmd {
 			__u32 hwpt_id;
 			/* @id is stdev_id */
 		} pasid_check;
+		struct {
+			__u32 chan_id;
+			__u64 src_addr;
+			__u64 dst_addr;
+			__u32 len;
+			__u32 flags;
+			__u32 out_cookie;
+		} dma_memcpy;
 	};
 	__u32 last;
 };

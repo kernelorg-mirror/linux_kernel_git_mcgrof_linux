@@ -11,9 +11,11 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/xarray.h>
+#include <linux/dmaengine.h>
 #include <uapi/linux/iommufd.h>
 
 #include "../iommu-priv.h"
+#include "../../dma/dmaengine.h"
 #include "io_pagetable.h"
 #include "iommufd_private.h"
 #include "iommufd_test.h"
@@ -162,6 +164,37 @@ enum selftest_obj_type {
 	TYPE_IDEV,
 };
 
+#define MOCK_MAX_DMA_CHANNELS 20
+
+static unsigned int max_num_dma_channels = MOCK_MAX_DMA_CHANNELS;
+module_param(max_num_dma_channels, uint, 0644);
+MODULE_PARM_DESC(max_num_dma_channels, "Number of DMA channels to support (default: 20)");
+
+struct mock_dma_desc {
+	struct dma_async_tx_descriptor txd;
+	dma_addr_t src;
+	dma_addr_t dst;
+	size_t len;
+	enum dma_transaction_type type;
+	int memset_value;
+
+	/* For XOR/PQ operations */
+	dma_addr_t *src_list; /* Array of source addresses */
+	unsigned int src_cnt; /* Number of sources */
+	dma_addr_t *dst_list; /* Array of destination addresses (for PQ) */
+	unsigned char *pq_coef; /* P+Q coefficients */
+	struct list_head node;
+};
+
+struct mock_dma_chan {
+	struct dma_chan chan;
+	struct list_head active_list;
+	struct list_head queue;
+	struct work_struct work;
+	spinlock_t lock;
+	bool running;
+};
+
 struct mock_dev {
 	struct device dev;
 	struct mock_viommu *viommu;
@@ -173,12 +206,27 @@ struct mock_dev {
 	atomic_t pasid_1024_fake_error;
 	unsigned int iopf_refcount;
 	struct iommu_domain *domain;
+
+	struct dma_device *dma_dev;
+	struct mock_dma_chan *dma_channels;
+	unsigned int num_dma_channels;
 };
 
 static inline struct mock_dev *to_mock_dev(struct device *dev)
 {
 	return container_of(dev, struct mock_dev, dev);
 }
+
+static inline struct mock_dma_chan *to_mock_dma_chan(struct dma_chan *c)
+{
+	return container_of(c, struct mock_dma_chan, chan);
+}
+
+static inline struct mock_dma_desc *to_mock_dma_desc(struct dma_async_tx_descriptor *txd)
+{
+	return container_of(txd, struct mock_dma_desc, txd);
+}
+
 
 struct selftest_obj {
 	struct iommufd_object obj;
@@ -929,12 +977,594 @@ get_md_pagetable_nested(struct iommufd_ucmd *ucmd, u32 mockpt_id,
 	return hwpt;
 }
 
+static struct selftest_obj *
+iommufd_test_get_selftest_obj(struct iommufd_ctx *ictx, u32 id)
+{
+	struct iommufd_object *dev_obj;
+	struct selftest_obj *sobj;
+
+	/*
+	 * Prefer to use the OBJ_SELFTEST because the destroy_rwsem will ensure
+	 * it doesn't race with detach, which is not allowed.
+	 */
+	dev_obj = iommufd_get_object(ictx, id, IOMMUFD_OBJ_SELFTEST);
+	if (IS_ERR(dev_obj))
+		return ERR_CAST(dev_obj);
+
+	sobj = to_selftest_obj(dev_obj);
+	if (sobj->type != TYPE_IDEV) {
+		iommufd_put_object(ictx, dev_obj);
+		return ERR_PTR(-EINVAL);
+	}
+	return sobj;
+}
+
+static void mock_dev_free_dma(struct mock_dev *mdev)
+{
+	pr_info("Mock DMA engine: %s unregistering with %d channels ...\n",
+		dev_name(&mdev->dev), mdev->num_dma_channels);
+
+	dma_async_device_unregister(mdev->dma_dev);
+
+	/*
+	 * dma_async_device_unregister() will call device_release() only
+	 * if a channel ever gets busy, so we need to tidy up ourselves
+	 * here in case no channels are ever used.
+	 */
+	device_release_driver(&mdev->dev);
+	kfree(mdev->dma_channels);
+}
+
 static void mock_dev_release(struct device *dev)
 {
 	struct mock_dev *mdev = to_mock_dev(dev);
 
 	ida_free(&mock_dev_ida, mdev->id);
+
+	if (mdev->flags & MOCK_FLAGS_DEVICE_DMA_ENGINE)
+		mock_dev_free_dma(mdev);
+
 	kfree(mdev);
+}
+
+/* Galois Field multiplication for P+Q operations */
+static unsigned char gf_mul(unsigned char a, unsigned char b)
+{
+	unsigned char result = 0;
+	unsigned char high_bit_set;
+	int i;
+
+	for (i = 0; i < 8; i++) {
+		if (b & 1)
+			result ^= a;
+		high_bit_set = a & 0x80;
+		a <<= 1;
+		if (high_bit_set)
+			a ^= 0x1b; /* x^8 + x^4 + x^3 + x + 1 */
+		b >>= 1;
+	}
+
+	return result;
+}
+
+/* Processes pending transfers */
+static void mock_dma_work_func(struct work_struct *work)
+{
+	struct mock_dma_chan *vchan = container_of(work, struct mock_dma_chan, work);
+	struct mock_dma_desc *vdesc;
+	struct dmaengine_desc_callback cb;
+	unsigned long flags;
+
+	spin_lock_irqsave(&vchan->lock, flags);
+
+	if (list_empty(&vchan->queue)) {
+		vchan->running = false;
+		spin_unlock_irqrestore(&vchan->lock, flags);
+		return;
+	}
+
+	vdesc = list_first_entry(&vchan->queue, struct mock_dma_desc, node);
+	list_del(&vdesc->node);
+	list_add_tail(&vdesc->node, &vchan->active_list);
+
+	spin_unlock_irqrestore(&vchan->lock, flags);
+
+	/* Actually perform the DMA transfer for memcpy operations */
+	if (vdesc->len) {
+		void *src_virt, *dst_virt;
+		void *p_virt, *q_virt;
+		unsigned char *p_bytes, *q_bytes;
+		unsigned int i, j;
+		unsigned char *dst_bytes;
+
+		switch (vdesc->type) {
+		case DMA_MEMCPY:
+			/* Convert DMA addresses to virtual addresses and perform the copy */
+			src_virt = phys_to_virt(vdesc->src);
+			dst_virt = phys_to_virt(vdesc->dst);
+
+			memcpy(dst_virt, src_virt, vdesc->len);
+			break;
+		case DMA_MEMSET:
+			dst_virt = phys_to_virt(vdesc->dst);
+			memset(dst_virt, vdesc->memset_value, vdesc->len);
+			break;
+		case DMA_XOR:
+			dst_virt = phys_to_virt(vdesc->dst);
+			dst_bytes = (unsigned char *)dst_virt;
+
+			memset(dst_virt, 0, vdesc->len);
+
+			/* XOR all sources into destination */
+			for (i = 0; i < vdesc->src_cnt; i++) {
+				void *src_virt = phys_to_virt(vdesc->src_list[i]);
+				unsigned char *src_bytes = (unsigned char *)src_virt;
+
+				for (j = 0; j < vdesc->len; j++)
+					dst_bytes[j] ^= src_bytes[j];
+			}
+			break;
+		case DMA_PQ:
+			p_virt = phys_to_virt(vdesc->dst_list[0]);
+			q_virt = phys_to_virt(vdesc->dst_list[1]);
+			p_bytes = (unsigned char *)p_virt;
+			q_bytes = (unsigned char *)q_virt;
+
+			/* Initialize P and Q destinations to zero */
+			memset(p_virt, 0, vdesc->len);
+			memset(q_virt, 0, vdesc->len);
+
+			/* Calculate P (XOR of all sources) and Q (weighted XOR) */
+			for (i = 0; i < vdesc->src_cnt; i++) {
+				void *src_virt = phys_to_virt(vdesc->src_list[i]);
+				unsigned char *src_bytes = (unsigned char *)src_virt;
+				unsigned char coef = vdesc->pq_coef[i];
+
+				for (j = 0; j < vdesc->len; j++) {
+					/* P calculation: simple XOR */
+					p_bytes[j] ^= src_bytes[j];
+
+					/* Q calculation: multiply in GF(2^8) and XOR */
+					q_bytes[j] ^= gf_mul(src_bytes[j], coef);
+				}
+			}
+			break;
+		default:
+			pr_warn("fake-dma: Unknown DMA operation type %d\n", vdesc->type);
+			break;
+		}
+	}
+
+	/* Mark descriptor as complete */
+	dma_cookie_complete(&vdesc->txd);
+
+	/* Call completion callback if set */
+	dmaengine_desc_get_callback(&vdesc->txd, &cb);
+	if (cb.callback)
+		cb.callback(cb.callback_param);
+
+	/* Process next transfer if available */
+	spin_lock_irqsave(&vchan->lock, flags);
+	list_del(&vdesc->node);
+
+	if (vdesc->type == DMA_XOR || vdesc->type == DMA_PQ) {
+		kfree(vdesc->src_list);
+		if (vdesc->type == DMA_PQ) {
+			kfree(vdesc->dst_list);
+			kfree(vdesc->pq_coef);
+		}
+	}
+
+	kfree(vdesc);
+
+	if (!list_empty(&vchan->queue)) {
+		spin_unlock_irqrestore(&vchan->lock, flags);
+		schedule_work(&vchan->work);
+	} else {
+		vchan->running = false;
+		spin_unlock_irqrestore(&vchan->lock, flags);
+	}
+}
+
+/* Submit descriptor to the DMA engine */
+static dma_cookie_t mock_dma_tx_submit(struct dma_async_tx_descriptor *txd)
+{
+	struct mock_dma_chan *vchan = to_mock_dma_chan(txd->chan);
+	struct mock_dma_desc *vdesc = to_mock_dma_desc(txd);
+	unsigned long flags;
+	dma_cookie_t cookie;
+
+	spin_lock_irqsave(&vchan->lock, flags);
+
+	cookie = dma_cookie_assign(txd);
+	list_add_tail(&vdesc->node, &vchan->queue);
+
+	/* Schedule processing if not already running */
+	if (!vchan->running) {
+		vchan->running = true;
+		schedule_work(&vchan->work);
+	}
+
+	spin_unlock_irqrestore(&vchan->lock, flags);
+
+	return cookie;
+}
+
+static
+struct dma_async_tx_descriptor *mock_dma_prep_memcpy(struct dma_chan *chan,
+						     dma_addr_t dest,
+						     dma_addr_t src,
+						     size_t len,
+						     unsigned long flags)
+{
+	struct mock_dma_chan *vchan = to_mock_dma_chan(chan);
+	struct mock_dma_desc *vdesc;
+
+	vdesc = kzalloc(sizeof(*vdesc), GFP_NOWAIT);
+	if (!vdesc)
+		return NULL;
+
+	if (!vchan)
+		return NULL;
+
+	dma_async_tx_descriptor_init(&vdesc->txd, chan);
+	vdesc->type = DMA_MEMCPY;
+	vdesc->txd.tx_submit = mock_dma_tx_submit;
+	vdesc->txd.flags = flags;
+	vdesc->src = src;
+	vdesc->dst = dest;
+	vdesc->len = len;
+	INIT_LIST_HEAD(&vdesc->node);
+
+	return &vdesc->txd;
+}
+
+static int iommufd_test_dma_memcpy_iommu(struct iommufd_ucmd *ucmd,
+					 struct iommu_test_cmd *cmd)
+{
+    struct selftest_obj *sobj;
+    struct mock_dev *mdev;
+    struct dma_chan *chan;
+    struct dma_async_tx_descriptor *txd;
+    dma_addr_t src_iova, dst_iova;
+
+    sobj = iommufd_test_get_selftest_obj(ucmd->ictx, cmd->id);
+    if (IS_ERR(sobj))
+        return PTR_ERR(sobj);
+
+    mdev = sobj->idev.mock_dev;
+
+    src_iova = cmd->dma_memcpy.src_addr;
+    dst_iova = cmd->dma_memcpy.dst_addr;
+
+    if (cmd->dma_memcpy.chan_id >= mdev->num_dma_channels)
+	    return -EINVAL;
+
+    chan = &mdev->dma_channels[cmd->dma_memcpy.chan_id].chan;
+
+    txd = dmaengine_prep_dma_memcpy(chan, dst_iova, src_iova,
+                                   cmd->dma_memcpy.len,
+                                   cmd->dma_memcpy.flags);
+    if (!txd)
+        return -ENOMEM;
+
+    cmd->dma_memcpy.out_cookie = dmaengine_submit(txd);
+    dma_async_issue_pending(chan);
+
+    return iommufd_ucmd_respond(ucmd, sizeof(*cmd));
+}
+
+static
+struct dma_async_tx_descriptor * mock_dma_prep_memset(struct dma_chan *chan,
+						      dma_addr_t dest,
+						      int value,
+						      size_t len,
+						      unsigned long flags)
+{
+	struct mock_dma_desc *vdesc;
+
+	vdesc = kzalloc(sizeof(*vdesc), GFP_NOWAIT);
+	if (!vdesc)
+		return NULL;
+
+	dma_async_tx_descriptor_init(&vdesc->txd, chan);
+	vdesc->type = DMA_MEMSET;
+	vdesc->txd.tx_submit = mock_dma_tx_submit;
+	vdesc->txd.flags = flags;
+	vdesc->dst = dest;
+	vdesc->len = len;
+	vdesc->memset_value = value & 0xFF; /* Ensure it's a single byte */
+
+	INIT_LIST_HEAD(&vdesc->node);
+
+	return &vdesc->txd;
+}
+
+static struct dma_async_tx_descriptor *
+mock_dma_prep_xor(struct dma_chan *chan, dma_addr_t dest, dma_addr_t *src,
+		  unsigned int src_cnt, size_t len, unsigned long flags)
+{
+	struct mock_dma_desc *vdesc;
+
+	vdesc = kzalloc(sizeof(*vdesc), GFP_NOWAIT);
+	if (!vdesc)
+		return NULL;
+
+	/* Allocate memory for source list */
+	vdesc->src_list = kmalloc(src_cnt * sizeof(dma_addr_t), GFP_NOWAIT);
+	if (!vdesc->src_list) {
+		kfree(vdesc);
+		return NULL;
+	}
+
+	dma_async_tx_descriptor_init(&vdesc->txd, chan);
+	vdesc->type = DMA_XOR;
+	vdesc->txd.tx_submit = mock_dma_tx_submit;
+	vdesc->txd.flags = flags;
+	vdesc->dst = dest;
+	vdesc->len = len;
+	vdesc->src_cnt = src_cnt;
+
+	memcpy(vdesc->src_list, src, src_cnt * sizeof(dma_addr_t));
+
+	INIT_LIST_HEAD(&vdesc->node);
+
+	return &vdesc->txd;
+}
+
+static struct dma_async_tx_descriptor *
+mock_dma_prep_pq(struct dma_chan *chan, dma_addr_t *dst, dma_addr_t *src,
+		 unsigned int src_cnt, const unsigned char *scf, size_t len,
+		 unsigned long flags)
+{
+	struct mock_dma_desc *vdesc;
+
+	vdesc = kzalloc(sizeof(*vdesc), GFP_NOWAIT);
+	if (!vdesc)
+		return NULL;
+
+	vdesc->src_list = kmalloc(src_cnt * sizeof(dma_addr_t), GFP_NOWAIT);
+	if (!vdesc->src_list) {
+		kfree(vdesc);
+		return NULL;
+	}
+
+	/* Allocate memory for destination list (P and Q) */
+	vdesc->dst_list = kmalloc(2 * sizeof(dma_addr_t), GFP_NOWAIT);
+	if (!vdesc->dst_list) {
+		kfree(vdesc->src_list);
+		kfree(vdesc);
+		return NULL;
+	}
+
+	/* Allocate memory for coefficients */
+	vdesc->pq_coef = kmalloc(src_cnt * sizeof(unsigned char), GFP_NOWAIT);
+	if (!vdesc->pq_coef) {
+		kfree(vdesc->dst_list);
+		kfree(vdesc->src_list);
+		kfree(vdesc);
+		return NULL;
+	}
+
+	dma_async_tx_descriptor_init(&vdesc->txd, chan);
+	vdesc->type = DMA_PQ;
+	vdesc->txd.tx_submit = mock_dma_tx_submit;
+	vdesc->txd.flags = flags;
+	vdesc->len = len;
+	vdesc->src_cnt = src_cnt;
+
+	/* Copy source addresses */
+	memcpy(vdesc->src_list, src, src_cnt * sizeof(dma_addr_t));
+	/* Copy destination addresses (P and Q) */
+	memcpy(vdesc->dst_list, dst, 2 * sizeof(dma_addr_t));
+	/* Copy coefficients */
+	memcpy(vdesc->pq_coef, scf, src_cnt * sizeof(unsigned char));
+
+	INIT_LIST_HEAD(&vdesc->node);
+
+	return &vdesc->txd;
+}
+
+static void mock_dma_issue_pending(struct dma_chan *chan)
+{
+	struct mock_dma_chan *vchan = to_mock_dma_chan(chan);
+	unsigned long flags;
+
+	spin_lock_irqsave(&vchan->lock, flags);
+
+	/* Start processing if not already running and queue not empty */
+	if (!vchan->running && !list_empty(&vchan->queue)) {
+		vchan->running = true;
+		schedule_work(&vchan->work);
+	}
+
+	spin_unlock_irqrestore(&vchan->lock, flags);
+}
+
+static int mock_dma_alloc_chan_resources(struct dma_chan *chan)
+{
+	struct mock_dma_chan *vchan = to_mock_dma_chan(chan);
+
+	INIT_LIST_HEAD(&vchan->active_list);
+	INIT_LIST_HEAD(&vchan->queue);
+	vchan->running = false;
+
+	return 1; /* Number of descriptors allocated */
+}
+
+static void mock_dma_free_chan_resources(struct dma_chan *chan)
+{
+	struct mock_dma_chan *vchan = to_mock_dma_chan(chan);
+	struct mock_dma_desc *vdesc, *_vdesc;
+	unsigned long flags;
+
+	cancel_work_sync(&vchan->work);
+
+	spin_lock_irqsave(&vchan->lock, flags);
+
+	/* Free all descriptors in queue */
+	list_for_each_entry_safe(vdesc, _vdesc, &vchan->queue, node) {
+		list_del(&vdesc->node);
+
+		/* Free allocated memory for XOR/PQ operations */
+		if (vdesc->type == DMA_XOR || vdesc->type == DMA_PQ) {
+			kfree(vdesc->src_list);
+			if (vdesc->type == DMA_PQ) {
+				kfree(vdesc->dst_list);
+				kfree(vdesc->pq_coef);
+			}
+		}
+		kfree(vdesc);
+	}
+
+	/* Free all descriptors in active list */
+	list_for_each_entry_safe(vdesc, _vdesc, &vchan->active_list, node) {
+		list_del(&vdesc->node);
+		/* Free allocated memory for XOR/PQ operations */
+		if (vdesc->type == DMA_XOR || vdesc->type == DMA_PQ) {
+			kfree(vdesc->src_list);
+			if (vdesc->type == DMA_PQ) {
+				kfree(vdesc->dst_list);
+				kfree(vdesc->pq_coef);
+			}
+		}
+		kfree(vdesc);
+	}
+
+	spin_unlock_irqrestore(&vchan->lock, flags);
+}
+
+static void mock_dma_release(struct dma_device *dma_dev)
+{
+	unsigned int i;
+        struct mock_dev *mdev = to_mock_dev(dma_dev->dev);
+
+	pr_info("refcount for dma device %s hit 0, quiescing...",
+		dev_name(&mdev->dev));
+
+	for (i = 0; i < mdev->num_dma_channels; i++) {
+		struct mock_dma_chan *vchan = &mdev->dma_channels[i];
+		cancel_work_sync(&vchan->work);
+	}
+
+        put_device(dma_dev->dev);
+}
+
+static void mock_dma_setup_config(struct mock_dev *mdev)
+{
+	unsigned int i;
+	struct dma_device *dma =  mdev->dma_dev;
+
+	dma->dev = get_device(&mdev->dev);
+
+	/* Set multiple capabilities for dmatest compatibility */
+	dma_cap_set(DMA_MEMCPY, dma->cap_mask);
+	dma_cap_set(DMA_MEMSET, dma->cap_mask);
+	dma_cap_set(DMA_XOR, dma->cap_mask);
+	dma_cap_set(DMA_PQ, dma->cap_mask);
+	dma_cap_set(DMA_PRIVATE, dma->cap_mask);
+
+	dma->device_alloc_chan_resources = mock_dma_alloc_chan_resources;
+	dma->device_free_chan_resources = mock_dma_free_chan_resources;
+	dma->device_prep_dma_memcpy = mock_dma_prep_memcpy;
+	dma->device_prep_dma_memset = mock_dma_prep_memset;
+	dma->device_prep_dma_xor = mock_dma_prep_xor;
+	dma->device_prep_dma_pq = mock_dma_prep_pq;
+	dma->device_issue_pending = mock_dma_issue_pending;
+	dma->device_tx_status = dma_cookie_status;
+	dma->device_release = mock_dma_release;
+
+	dma->copy_align = 4; /* 4-byte alignment for memcpy */
+	dma->fill_align = 4; /* 4-byte alignment for memset */
+	dma->xor_align = 4;  /* 4-byte alignment for xor */
+	dma->pq_align = 4;   /* 4-byte alignment for pq */
+
+	dma->max_xor = 16;   /* Support up to 16 XOR sources */
+	dma->max_pq = 16;    /* Support up to 16 P+Q sources */
+
+	dma->src_addr_widths = BIT(DMA_SLAVE_BUSWIDTH_1_BYTE) |
+			       BIT(DMA_SLAVE_BUSWIDTH_2_BYTES) |
+			       BIT(DMA_SLAVE_BUSWIDTH_4_BYTES) |
+			       BIT(DMA_SLAVE_BUSWIDTH_8_BYTES);
+	dma->dst_addr_widths = dma->src_addr_widths;
+	dma->directions = BIT(DMA_MEM_TO_MEM);
+	dma->residue_granularity = DMA_RESIDUE_GRANULARITY_DESCRIPTOR;
+
+	INIT_LIST_HEAD(&dma->channels);
+
+	for (i = 0; i < mdev->num_dma_channels; i++) {
+		struct mock_dma_chan *vchan = &mdev->dma_channels[i];
+
+		vchan->chan.device = dma;
+		dma_cookie_init(&vchan->chan);
+
+		spin_lock_init(&vchan->lock);
+		INIT_LIST_HEAD(&vchan->active_list);
+		INIT_LIST_HEAD(&vchan->queue);
+
+		INIT_WORK(&vchan->work, mock_dma_work_func);
+
+		list_add_tail(&vchan->chan.device_node, &dma->channels);
+	}
+}
+
+static int mock_dma_engine_setup(struct mock_dev *mdev)
+{
+	unsigned int i;
+	int ret;
+	struct dma_device *dma;
+
+	if (max_num_dma_channels > MOCK_MAX_DMA_CHANNELS)
+		max_num_dma_channels = MOCK_MAX_DMA_CHANNELS;
+
+	mdev->num_dma_channels = max_num_dma_channels;
+
+	dma = kzalloc(sizeof(*dma), GFP_KERNEL);
+	if (!dma)
+		return -ENOMEM;
+
+	mdev->dma_dev = dma;
+	mdev->dma_channels = kzalloc(sizeof(struct mock_dma_chan) *
+			mdev->num_dma_channels, GFP_KERNEL);
+	if (!mdev->dma_channels) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	ret = device_bind_driver(&mdev->dev);
+	if (ret)
+		goto out_free_chans;
+
+	mock_dma_setup_config(mdev);
+	dma = mdev->dma_dev;
+
+	/* Register with the DMA Engine */
+	ret = dma_async_device_register(dma);
+	if (ret) {
+		ret = -EINVAL;
+		goto put_device;
+	}
+
+	for (i = 0; i < mdev->num_dma_channels; i++) {
+		struct mock_dma_chan *vchan = &mdev->dma_channels[i];
+		pr_info("Registered fake DMA channel %d (%s)\n",
+			i, dma_chan_name(&vchan->chan));
+	}
+
+	pr_info("Fake DMA engine: %s registered with %d channels\n",
+		dev_name(&mdev->dev), mdev->num_dma_channels);
+
+	return 0;
+
+put_device:
+        put_device(&mdev->dev);
+	device_release_driver(&mdev->dev);
+out_free_chans:
+	kfree(mdev->dma_channels);
+out:
+	kfree(mdev->dma_dev);
+	mdev->dma_dev = NULL;
+	return ret;
 }
 
 static struct mock_dev *mock_dev_create(unsigned long dev_flags)
@@ -945,6 +1575,7 @@ static struct mock_dev *mock_dev_create(unsigned long dev_flags)
 	};
 	const u32 valid_flags = MOCK_FLAGS_DEVICE_NO_DIRTY |
 				MOCK_FLAGS_DEVICE_HUGE_IOVA |
+				MOCK_FLAGS_DEVICE_DMA_ENGINE |
 				MOCK_FLAGS_DEVICE_PASID;
 	struct mock_dev *mdev;
 	int rc, i;
@@ -957,10 +1588,18 @@ static struct mock_dev *mock_dev_create(unsigned long dev_flags)
 		return ERR_PTR(-ENOMEM);
 
 	init_rwsem(&mdev->viommu_rwsem);
+
 	device_initialize(&mdev->dev);
 	mdev->flags = dev_flags;
 	mdev->dev.release = mock_dev_release;
 	mdev->dev.bus = &iommufd_mock_bus_type.bus;
+
+	if (dev_flags & MOCK_FLAGS_DEVICE_DMA_ENGINE) {
+		rc = mock_dma_engine_setup(mdev);
+	if (rc)
+		goto err_put;
+	}
+
 	for (i = 0; i < MOCK_DEV_CACHE_NUM; i++)
 		mdev->cache[i] = IOMMU_TEST_DEV_CACHE_DEFAULT;
 
@@ -1060,28 +1699,6 @@ out_mdev:
 out_sobj:
 	iommufd_object_abort(ucmd->ictx, &sobj->obj);
 	return rc;
-}
-
-static struct selftest_obj *
-iommufd_test_get_selftest_obj(struct iommufd_ctx *ictx, u32 id)
-{
-	struct iommufd_object *dev_obj;
-	struct selftest_obj *sobj;
-
-	/*
-	 * Prefer to use the OBJ_SELFTEST because the destroy_rwsem will ensure
-	 * it doesn't race with detach, which is not allowed.
-	 */
-	dev_obj = iommufd_get_object(ictx, id, IOMMUFD_OBJ_SELFTEST);
-	if (IS_ERR(dev_obj))
-		return ERR_CAST(dev_obj);
-
-	sobj = to_selftest_obj(dev_obj);
-	if (sobj->type != TYPE_IDEV) {
-		iommufd_put_object(ictx, dev_obj);
-		return ERR_PTR(-EINVAL);
-	}
-	return sobj;
 }
 
 /* Replace the mock domain with a manually allocated hw_pagetable */
@@ -1965,8 +2582,12 @@ int iommufd_test(struct iommufd_ucmd *ucmd)
 		return iommufd_test_pasid_replace(ucmd, cmd);
 	case IOMMU_TEST_OP_PASID_DETACH:
 		return iommufd_test_pasid_detach(ucmd, cmd);
+	case IOMMU_TEST_OP_DMA_PREP_MEMCPY:
+		return iommufd_test_dma_memcpy_iommu(ucmd, cmd);
 	case IOMMU_TEST_OP_PASID_CHECK_HWPT:
 		return iommufd_test_pasid_check_hwpt(ucmd, cmd);
+	case IOMMU_TEST_OP_DMA_CHECK_COMPLETION:
+		return 0;
 	default:
 		return -EOPNOTSUPP;
 	}
