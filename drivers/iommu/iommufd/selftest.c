@@ -1005,13 +1005,13 @@ static void mock_dev_free_dma(struct mock_dev *mdev)
 		dev_name(&mdev->dev), mdev->num_dma_channels);
 
 	dma_async_device_unregister(mdev->dma_dev);
+	mdev->dev.driver = NULL;
 
 	/*
 	 * dma_async_device_unregister() will call device_release() only
 	 * if a channel ever gets busy, so we need to tidy up ourselves
 	 * here in case no channels are ever used.
 	 */
-	device_release_driver(&mdev->dev);
 	kfree(mdev->dma_channels);
 }
 
@@ -1450,12 +1450,23 @@ static void mock_dma_release(struct dma_device *dma_dev)
         put_device(dma_dev->dev);
 }
 
+static struct device_driver mock_iommu_driver = {
+	.name = KBUILD_MODNAME,
+	.owner = THIS_MODULE,
+};
+
 static void mock_dma_setup_config(struct mock_dev *mdev)
 {
 	unsigned int i;
 	struct dma_device *dma =  mdev->dma_dev;
 
 	dma->dev = get_device(&mdev->dev);
+
+	/*
+	 * This is to ensure the DMA engine ops uses the iommufd module
+	 * for refcounts on channels.
+	 */
+	dma->dev->driver = &mock_iommu_driver;
 
 	/* Set multiple capabilities for dmatest compatibility */
 	dma_cap_set(DMA_MEMCPY, dma->cap_mask);
@@ -1531,10 +1542,6 @@ static int mock_dma_engine_setup(struct mock_dev *mdev)
 		goto out;
 	}
 
-	ret = device_bind_driver(&mdev->dev);
-	if (ret)
-		goto out_free_chans;
-
 	mock_dma_setup_config(mdev);
 	dma = mdev->dma_dev;
 
@@ -1558,8 +1565,6 @@ static int mock_dma_engine_setup(struct mock_dev *mdev)
 
 put_device:
         put_device(&mdev->dev);
-	device_release_driver(&mdev->dev);
-out_free_chans:
 	kfree(mdev->dma_channels);
 out:
 	kfree(mdev->dma_dev);
@@ -1594,12 +1599,6 @@ static struct mock_dev *mock_dev_create(unsigned long dev_flags)
 	mdev->dev.release = mock_dev_release;
 	mdev->dev.bus = &iommufd_mock_bus_type.bus;
 
-	if (dev_flags & MOCK_FLAGS_DEVICE_DMA_ENGINE) {
-		rc = mock_dma_engine_setup(mdev);
-	if (rc)
-		goto err_put;
-	}
-
 	for (i = 0; i < MOCK_DEV_CACHE_NUM; i++)
 		mdev->cache[i] = IOMMU_TEST_DEV_CACHE_DEFAULT;
 
@@ -1624,6 +1623,13 @@ static struct mock_dev *mock_dev_create(unsigned long dev_flags)
 	rc = device_add(&mdev->dev);
 	if (rc)
 		goto err_put;
+
+	if (dev_flags & MOCK_FLAGS_DEVICE_DMA_ENGINE) {
+		rc = mock_dma_engine_setup(mdev);
+		if (rc)
+			goto err_put;
+	}
+
 	return mdev;
 
 err_put:
