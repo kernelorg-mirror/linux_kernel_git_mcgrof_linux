@@ -207,6 +207,7 @@ struct mock_dev {
 	unsigned int iopf_refcount;
 	struct iommu_domain *domain;
 
+	struct iommu_domain *domain;
 	struct dma_device *dma_dev;
 	struct mock_dma_chan *dma_channels;
 	unsigned int num_dma_channels;
@@ -226,7 +227,6 @@ static inline struct mock_dma_desc *to_mock_dma_desc(struct dma_async_tx_descrip
 {
 	return container_of(txd, struct mock_dma_desc, txd);
 }
-
 
 struct selftest_obj {
 	struct iommufd_object obj;
@@ -256,6 +256,8 @@ static int mock_domain_nop_attach(struct iommu_domain *domain,
 
 	if (domain->dirty_ops && (mdev->flags & MOCK_FLAGS_DEVICE_NO_DIRTY))
 		return -EINVAL;
+
+	mdev->domain = domain;
 
 	iommu_group_mutex_assert(dev);
 	if (domain->type == IOMMU_DOMAIN_NESTED) {
@@ -1047,7 +1049,19 @@ static unsigned char gf_mul(unsigned char a, unsigned char b)
 	return result;
 }
 
-/* Processes pending transfers */
+static void *iova_to_virt(struct mock_dev *mdev, dma_addr_t iova)
+{
+	if (!mdev->domain)
+		return NULL;
+
+	phys_addr_t phys = iommu_iova_to_phys(mdev->domain, iova);
+
+	if (!phys)
+		return NULL;
+
+	return phys_to_virt(phys);
+}
+
 static void mock_dma_work_func(struct work_struct *work)
 {
 	struct mock_dma_chan *vchan = container_of(work, struct mock_dma_chan, work);
@@ -1069,76 +1083,118 @@ static void mock_dma_work_func(struct work_struct *work)
 
 	spin_unlock_irqrestore(&vchan->lock, flags);
 
-	/* Actually perform the DMA transfer for memcpy operations */
 	if (vdesc->len) {
 		void *src_virt, *dst_virt;
 		void *p_virt, *q_virt;
 		unsigned char *p_bytes, *q_bytes;
 		unsigned int i, j;
 		unsigned char *dst_bytes;
+		struct dma_device *dma = vchan->chan.device;
+		struct mock_dev *mdev = to_mock_dev(dma->dev);
+
+		vchan->chan.device = dma;
 
 		switch (vdesc->type) {
 		case DMA_MEMCPY:
-			/* Convert DMA addresses to virtual addresses and perform the copy */
-			src_virt = phys_to_virt(vdesc->src);
-			dst_virt = phys_to_virt(vdesc->dst);
+			src_virt = iova_to_virt(mdev, vdesc->src);
+			dst_virt = iova_to_virt(mdev, vdesc->dst);
+
+			if (!src_virt || !dst_virt) {
+				pr_err("Failed to translate IOVA addresses on memcpy\n");
+				break;
+			}
 
 			memcpy(dst_virt, src_virt, vdesc->len);
 			break;
 		case DMA_MEMSET:
-			dst_virt = phys_to_virt(vdesc->dst);
+			dst_virt = iova_to_virt(mdev, vdesc->dst);
+			if (!dst_virt) {
+				pr_err("Failed to translate IOVA addresses on memset\n");
+				break;
+			}
 			memset(dst_virt, vdesc->memset_value, vdesc->len);
 			break;
 		case DMA_XOR:
-			dst_virt = phys_to_virt(vdesc->dst);
+			dst_virt = iova_to_virt(mdev, vdesc->dst);
+			if (!dst_virt) {
+				pr_err("Failed to translate IOVA addresses on xor\n");
+				break;
+			}
+
 			dst_bytes = (unsigned char *)dst_virt;
 
 			memset(dst_virt, 0, vdesc->len);
 
 			/* XOR all sources into destination */
 			for (i = 0; i < vdesc->src_cnt; i++) {
-				void *src_virt = phys_to_virt(vdesc->src_list[i]);
-				unsigned char *src_bytes = (unsigned char *)src_virt;
+				void *src_virt;
+				unsigned char *src_bytes;
+
+				src_virt = iova_to_virt(mdev, vdesc->src_list[i]);
+				if (!src_virt) {
+					pr_err("Failed to translate IOVA addresses on xor for index %u\n", i);
+					break;
+				}
+				src_bytes = (unsigned char *)src_virt;
 
 				for (j = 0; j < vdesc->len; j++)
 					dst_bytes[j] ^= src_bytes[j];
 			}
 			break;
 		case DMA_PQ:
-			p_virt = phys_to_virt(vdesc->dst_list[0]);
-			q_virt = phys_to_virt(vdesc->dst_list[1]);
+			p_virt = iova_to_virt(mdev, vdesc->dst_list[0]);
+			q_virt = iova_to_virt(mdev, vdesc->dst_list[1]);
+
+			if (!p_virt || !q_virt) {
+				pr_err("Failed to translate IOVA addresses on pq\n");
+				break;
+			}
+
 			p_bytes = (unsigned char *)p_virt;
 			q_bytes = (unsigned char *)q_virt;
 
-			/* Initialize P and Q destinations to zero */
 			memset(p_virt, 0, vdesc->len);
 			memset(q_virt, 0, vdesc->len);
 
-			/* Calculate P (XOR of all sources) and Q (weighted XOR) */
+			/*
+			 * Calculates:
+			 * - P (XOR of all sources)
+			 * - Q (weighted XOR)
+			 */
 			for (i = 0; i < vdesc->src_cnt; i++) {
-				void *src_virt = phys_to_virt(vdesc->src_list[i]);
-				unsigned char *src_bytes = (unsigned char *)src_virt;
-				unsigned char coef = vdesc->pq_coef[i];
+				void *src_virt;
+				unsigned char *src_bytes;
+				unsigned char coef;
+
+				src_virt =
+					iova_to_virt(mdev, vdesc->src_list[i]);
+				if (!src_virt) {
+					pr_err("Failed to translate IOVA addresses on pq for index %u\n", i);
+					break;
+				}
+
+				src_bytes = (unsigned char *)src_virt;
+				coef = vdesc->pq_coef[i];
 
 				for (j = 0; j < vdesc->len; j++) {
 					/* P calculation: simple XOR */
 					p_bytes[j] ^= src_bytes[j];
 
-					/* Q calculation: multiply in GF(2^8) and XOR */
+					/* Q calculation:
+					 * multiply in GF(2^8) and XOR */
 					q_bytes[j] ^= gf_mul(src_bytes[j], coef);
 				}
 			}
 			break;
 		default:
-			pr_warn("fake-dma: Unknown DMA operation type %d\n", vdesc->type);
+			pr_warn("fake-dma: Unknown DMA operation type %d\n",
+				vdesc->type);
 			break;
 		}
 	}
 
-	/* Mark descriptor as complete */
 	dma_cookie_complete(&vdesc->txd);
 
-	/* Call completion callback if set */
 	dmaengine_desc_get_callback(&vdesc->txd, &cb);
 	if (cb.callback)
 		cb.callback(cb.callback_param);
@@ -1595,6 +1651,7 @@ static struct mock_dev *mock_dev_create(unsigned long dev_flags)
 	init_rwsem(&mdev->viommu_rwsem);
 
 	device_initialize(&mdev->dev);
+	mdev->domain = NULL;
 	mdev->flags = dev_flags;
 	mdev->dev.release = mock_dev_release;
 	mdev->dev.bus = &iommufd_mock_bus_type.bus;
