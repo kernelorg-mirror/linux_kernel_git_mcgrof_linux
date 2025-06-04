@@ -1503,7 +1503,7 @@ static void mock_dma_release(struct dma_device *dma_dev)
 		cancel_work_sync(&vchan->work);
 	}
 
-        put_device(dma_dev->dev);
+        //put_device(dma_dev->dev);
 }
 
 static struct device_driver mock_iommu_driver = {
@@ -1620,7 +1620,7 @@ static int mock_dma_engine_setup(struct mock_dev *mdev)
 	return 0;
 
 put_device:
-        put_device(&mdev->dev);
+        //put_device(&mdev->dev);
 	kfree(mdev->dma_channels);
 out:
 	kfree(mdev->dma_dev);
