@@ -5,7 +5,11 @@
  */
 #include <linux/bio-integrity.h>
 #include <linux/blk-crypto.h>
+#include <linux/blk-iobuf.h>
 #include <linux/fscrypt.h>
+#if IS_ENABLED(CONFIG_BLK_IOBUF_POOL)
+#include <trace/events/block_iobuf.h>
+#endif
 #include <linux/pagemap.h>
 #include <linux/iomap.h>
 #include <linux/task_io_accounting_ops.h>
@@ -59,6 +63,166 @@ static struct bio *iomap_dio_alloc_bio(const struct iomap_iter *iter,
 					GFP_KERNEL, dio->dops->bio_set);
 	return bio_alloc(iter->iomap.bdev, nr_vecs, opf, GFP_KERNEL);
 }
+
+static void iomap_dio_submit_bio(const struct iomap_iter *iter,
+		struct iomap_dio *dio, struct bio *bio, loff_t pos);
+
+#if IS_ENABLED(CONFIG_BLK_IOBUF_POOL)
+/*
+ * Context for a pool-backed iobuf write bio.  Carries the folio that must be
+ * returned to the queue pool after the device has consumed it.
+ */
+struct iomap_dio_iobuf_ctx {
+	struct iomap_dio	*dio;
+	struct request_queue	*q;
+	struct folio		*folio;
+};
+
+static void iomap_dio_iobuf_bio_end_io(struct bio *bio)
+{
+	struct iomap_dio_iobuf_ctx *ctx = bio->bi_private;
+	struct iomap_dio *dio = ctx->dio;
+	struct request_queue *q = ctx->q;
+	struct folio *folio = ctx->folio;
+
+	kfree(ctx);
+	blk_iobuf_free_folio(q, folio);
+
+	/* Restore normal dio pointer and delegate to standard completion */
+	bio->bi_private = dio;
+	iomap_dio_bio_end_io(bio);
+}
+
+/*
+ * iomap_dio_write_iobuf - prototype pool-backed aligned DIO write path
+ *
+ * Constraints: IOMAP_DIO_WRITE only, full-block aligned, pool available,
+ * synchronous copy_from_iter (no async copyback needed for writes).
+ *
+ * Returns bytes consumed on success, 0 if ineligible, <0 on error.
+ */
+static ssize_t iomap_dio_write_iobuf(const struct iomap_iter *iter,
+				     struct iomap_dio *dio, loff_t pos,
+				     unsigned int alignment, blk_opf_t op)
+{
+	struct block_device *bdev = iter->iomap.bdev;
+	struct iomap_dio_iobuf_ctx *ctx;
+	struct request_queue *q;
+	struct iov_iter copy_iter;
+	struct folio *folio;
+	struct bio *bio;
+	unsigned int fsize;
+	size_t len;
+	ssize_t ret;
+
+	/* Only writes for now */
+	if (!(dio->flags & IOMAP_DIO_WRITE))
+		return 0;
+
+	if (!bdev)
+		return 0;
+
+	q = bdev_get_queue(bdev);
+	if (!blk_queue_iobuf_pool_enabled(q))
+		return 0;
+
+	fsize = blk_iobuf_pool_folio_size(q);
+	if (!fsize)
+		return 0;
+
+	/*
+	 * Never bounce an atomic write: it must be issued as a single bio
+	 * covering the whole length (see the REQ_ATOMIC check in
+	 * iomap_dio_bio_iter_one()).  Splitting it into per-folio bios here
+	 * would silently break hardware atomic semantics.
+	 */
+	if (op & REQ_ATOMIC)
+		return 0;
+
+	/*
+	 * Integrity (PI) writes need fs_bio_integrity_generate() run on the
+	 * bio, which the normal path below does; leave them to it rather than
+	 * replicate the integrity setup in the bounce.
+	 */
+	if (iter->iomap.flags & IOMAP_F_INTEGRITY)
+		return 0;
+
+	/*
+	 * Bvec-backed iterators (e.g. io_uring registered buffers) are already
+	 * described as physical ranges; bouncing them only adds a memcpy with
+	 * no segment benefit.
+	 */
+	if (iov_iter_is_bvec(dio->submit.iter))
+		return 0;
+
+	len = iov_iter_count(dio->submit.iter);
+
+	/* Require at least one full folio, aligned */
+	if (len < fsize)
+		return 0;
+	if (!IS_ALIGNED(pos, fsize))
+		return 0;
+
+	/*
+	 * This helper emits a single fsize bio.  Do not turn a larger write
+	 * into N separately-bounced fsize sub-I/Os -- that fragments one
+	 * multi-segment bio into N bios and regresses throughput badly.  Let
+	 * the normal path handle anything bigger than one folio for now.
+	 */
+	if (round_down(len, fsize) != fsize)
+		return 0;
+
+	folio = blk_iobuf_alloc_folio(q, GFP_NOWAIT);
+	if (!folio) {
+		blk_iobuf_inc_fallback(q);
+		trace_block_iobuf_fallback(q, "dio_pool_exhausted");
+		return 0;
+	}
+
+	/* Copy user data into the folio */
+	copy_iter = *dio->submit.iter;
+	iov_iter_truncate(&copy_iter, fsize);
+	if (copy_from_iter(folio_address(folio), fsize,
+			   &copy_iter) != fsize) {
+		blk_iobuf_free_folio(q, folio);
+		return -EFAULT;
+	}
+
+	/* Wrap the bio private to carry both the dio and the folio to free */
+	ctx = kmalloc(sizeof(*ctx), GFP_KERNEL);
+	if (!ctx) {
+		blk_iobuf_free_folio(q, folio);
+		return -ENOMEM;
+	}
+	ctx->dio   = dio;
+	ctx->q     = q;
+	ctx->folio = folio;
+
+	bio = iomap_dio_alloc_bio(iter, dio, 1, op);
+	fscrypt_set_bio_crypt_ctx(bio, iter->inode, pos, GFP_KERNEL);
+	bio->bi_iter.bi_sector = iomap_sector(&iter->iomap, pos);
+	bio->bi_write_hint = iter->inode->i_write_hint;
+	bio->bi_ioprio = dio->iocb->ki_ioprio;
+	bio->bi_private = ctx;
+	bio->bi_end_io  = iomap_dio_iobuf_bio_end_io;
+
+	if (!bio_add_folio(bio, folio, fsize, 0)) {
+		kfree(ctx);
+		blk_iobuf_free_folio(q, folio);
+		bio_put(bio);
+		return -EINVAL;
+	}
+
+	ret = bio->bi_iter.bi_size;
+	task_io_account_write(ret);
+
+	trace_block_iobuf_bounce_submit(q, ret, 1, bio_op(bio));
+
+	iov_iter_advance(dio->submit.iter, fsize);
+	iomap_dio_submit_bio(iter, dio, bio, pos);
+	return ret;
+}
+#endif /* CONFIG_BLK_IOBUF_POOL */
 
 static void iomap_dio_submit_bio(const struct iomap_iter *iter,
 		struct iomap_dio *dio, struct bio *bio, loff_t pos)
@@ -338,6 +502,23 @@ static ssize_t iomap_dio_bio_iter_one(struct iomap_iter *iter,
 	unsigned int nr_vecs;
 	struct bio *bio;
 	ssize_t ret;
+
+	/*
+	 * Attempt a pool-backed write bounce for aligned writes before falling
+	 * through to the standard path.  iomap_dio_write_iobuf() returns 0 if
+	 * the pool is absent or the request is ineligible, so this is safe.
+	 */
+#ifdef CONFIG_BLK_IOBUF_POOL
+	if ((dio->flags & IOMAP_DIO_WRITE) &&
+	    !(dio->flags & IOMAP_DIO_BOUNCE)) {
+		ret = iomap_dio_write_iobuf(iter, dio, pos, alignment, op);
+		if (ret > 0)
+			return ret;
+		if (ret < 0)
+			return ret;
+		/* ret == 0: ineligible, fall through to standard path */
+	}
+#endif
 
 	if (dio->flags & IOMAP_DIO_BOUNCE)
 		nr_vecs = bio_iov_bounce_nr_vecs(dio->submit.iter, op);
