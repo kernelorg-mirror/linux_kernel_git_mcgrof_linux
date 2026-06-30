@@ -30,6 +30,7 @@ enum {
 
 enum {
 	IO_REGBUF_F_KBUF		= 1,
+	IO_REGBUF_F_BLK_IOBUF		= 2,	/* allocated from queue iobuf pool */
 };
 
 struct io_mapped_ubuf {
@@ -42,6 +43,11 @@ struct io_mapped_ubuf {
 	u8		dir;
 	void		(*release)(void *);
 	void		*priv;
+	/* blk iobuf pool association (set when IS_BLK_IOBUF flag is used) */
+	struct request_queue *blk_q;
+	u32		blk_q_limits_gen;
+	u8		blk_iobuf_order;
+	bool		is_blk_iobuf;
 	struct bio_vec	bvec[] __counted_by(nr_bvecs);
 };
 
@@ -74,6 +80,26 @@ int io_prep_reg_iovec(struct io_kiocb *req, struct iou_vec *iv,
 			const struct iovec __user *uvec, size_t uvec_segs);
 
 int io_register_clone_buffers(struct io_ring_ctx *ctx, void __user *arg);
+int io_register_buffers_alloc_for_file(struct io_ring_ctx *ctx,
+				       void __user *arg);
+bool io_uring_cmd_fixed_buf_is_blk_iobuf(struct io_uring_cmd *ioucmd,
+					  unsigned int issue_flags,
+					  struct request_queue *expected_q);
+struct io_mapped_ubuf *io_uring_cmd_fixed_buf_get_imu(
+					struct io_uring_cmd *ioucmd,
+					unsigned int issue_flags);
+
+/*
+ * io_uring_cmd_blk_iobuf_validate - validate pool buffer queue association
+ *
+ * Returns:
+ *   0        - fixed buffer is not an iobuf, no action needed
+ *   1        - iobuf IS valid for @expected_q
+ *  -ESTALE   - iobuf exists but queue or limits_gen doesn't match
+ */
+int io_uring_cmd_blk_iobuf_validate(struct io_uring_cmd *ioucmd,
+				     unsigned int issue_flags,
+				     struct request_queue *expected_q);
 int io_sqe_buffers_unregister(struct io_ring_ctx *ctx);
 int io_sqe_buffers_register(struct io_ring_ctx *ctx, void __user *arg,
 			    unsigned int nr_args, u64 __user *tags);

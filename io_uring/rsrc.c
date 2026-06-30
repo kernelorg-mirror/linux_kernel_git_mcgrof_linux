@@ -10,6 +10,8 @@
 #include <linux/compat.h>
 #include <linux/io_uring.h>
 #include <linux/io_uring/cmd.h>
+#include <linux/blk-iobuf.h>
+#include <linux/blkdev.h>
 
 #include <uapi/linux/io_uring.h>
 
@@ -1395,6 +1397,302 @@ static int io_clone_buffers(struct io_ring_ctx *ctx, struct io_ring_ctx *src_ctx
 	ctx->buf_table = data;
 	return 0;
 }
+
+#ifdef CONFIG_BLK_IOBUF_POOL
+/* Release callback for pool-backed io_mapped_ubuf */
+static void io_release_blk_iobuf(void *priv)
+{
+	struct io_mapped_ubuf *imu = priv;
+	struct request_queue *q = imu->blk_q;
+	unsigned int i;
+
+	if (!q)
+		return;
+
+	for (i = 0; i < imu->nr_bvecs; i++) {
+		struct folio *folio = bvec_folio(&imu->bvec[i]);
+
+		blk_iobuf_free_folio(q, folio);
+	}
+	blk_put_queue(q);
+}
+
+/**
+ * io_register_buffers_alloc_for_file - allocate fixed buffers from queue pool
+ *
+ * Resolves @arg->fd to a block device, verifies the queue has an iobuf pool
+ * that satisfies @arg->min_order, allocates folios from that pool, and
+ * registers them as a kernel-backed fixed buffer at @arg->index.
+ */
+int io_register_buffers_alloc_for_file(struct io_ring_ctx *ctx,
+					void __user *arg)
+{
+	struct io_uring_buf_alloc_for_file req;
+	struct io_rsrc_data *data = &ctx->buf_table;
+	struct request_queue *q = NULL;
+	struct block_device *bdev;
+	struct io_rsrc_node *node;
+	struct io_mapped_ubuf *imu;
+	struct blk_iobuf_pool *pool;
+	struct file *file;
+	unsigned int nr_folios, i;
+	unsigned int index;
+	int ret;
+
+	if (!IS_ENABLED(CONFIG_BLK_IOBUF_POOL))
+		return -EOPNOTSUPP;
+
+	if (copy_from_user(&req, arg, sizeof(req)))
+		return -EFAULT;
+
+	if (req.reserved[0] || req.reserved[1])
+		return -EINVAL;
+
+	if (!req.buffer_size)
+		return -EINVAL;
+
+	index = req.index;
+
+	/* Resolve fd to a block device */
+	file = fget(req.fd);
+	if (!file)
+		return -EBADF;
+
+	if (!S_ISBLK(file_inode(file)->i_mode)) {
+		ret = -ENOTBLK;
+		goto out_fput;
+	}
+
+	bdev = file_bdev(file);
+	if (!bdev) {
+		ret = -ENXIO;
+		goto out_fput;
+	}
+	q = bdev_get_queue(bdev);
+	if (!q) {
+		ret = -ENXIO;
+		goto out_fput;
+	}
+
+	if (!blk_get_queue(q)) {
+		q = NULL;
+		ret = -ENXIO;
+		goto out_fput;
+	}
+
+	/* Pool check */
+	if (!blk_queue_iobuf_pool_enabled(q)) {
+		if (req.flags & IORING_BUF_ALLOC_REQUIRE_QUEUE_POOL) {
+			ret = -EOPNOTSUPP;
+			goto out_put_q;
+		}
+		/* Without pool, we cannot proceed */
+		ret = -EOPNOTSUPP;
+		goto out_put_q;
+	}
+
+	pool = q->iobuf_pool;
+
+	/* Order check */
+	if (req.min_order && pool->order < req.min_order) {
+		if (req.flags & IORING_BUF_ALLOC_STRICT_ORDER) {
+			ret = -EOPNOTSUPP;
+			goto out_put_q;
+		}
+	}
+
+	/* Calculate number of folios needed */
+	nr_folios = DIV_ROUND_UP(req.buffer_size, pool->folio_size);
+	if (!nr_folios) {
+		ret = -EINVAL;
+		goto out_put_q;
+	}
+
+	/* Allocate imu with space for bvecs (uses cache for small counts) */
+	imu = io_alloc_imu(ctx, nr_folios);
+	if (!imu) {
+		ret = -ENOMEM;
+		goto out_put_q;
+	}
+
+	/*
+	 * Allocate the node.  io_uring_register() already holds uring_lock
+	 * for the duration of the register operation, so do not lock it again
+	 * here -- doing so would self-deadlock.
+	 */
+	lockdep_assert_held(&ctx->uring_lock);
+	if (index >= data->nr) {
+		ret = -EINVAL;
+		goto out_free_imu;
+	}
+	index = array_index_nospec(index, data->nr);
+	if (data->nodes[index]) {
+		ret = -EBUSY;
+		goto out_free_imu;
+	}
+
+	node = io_rsrc_node_alloc(ctx, IORING_RSRC_BUFFER);
+	if (!node) {
+		ret = -ENOMEM;
+		goto out_free_imu;
+	}
+
+	/* Allocate pool folios and populate bvecs */
+	for (i = 0; i < nr_folios; i++) {
+		struct folio *folio;
+		unsigned int chunk;
+
+		folio = blk_iobuf_alloc_folio(q, GFP_KERNEL);
+		if (!folio) {
+			ret = (req.flags & IORING_BUF_ALLOC_ALLOW_FALLBACK) ?
+				-EAGAIN : -ENOMEM;
+			goto out_free_folios;
+		}
+		chunk = min_t(size_t, pool->folio_size,
+			      req.buffer_size - (size_t)i * pool->folio_size);
+		imu->bvec[i] = (struct bio_vec){
+			.bv_page   = folio_page(folio, 0),
+			.bv_offset = 0,
+			.bv_len    = chunk,
+		};
+	}
+
+	imu->ubuf            = 0;
+	imu->len             = req.buffer_size;
+	imu->nr_bvecs        = nr_folios;
+	imu->folio_shift     = pool->order + PAGE_SHIFT;
+	imu->flags           = IO_REGBUF_F_KBUF | IO_REGBUF_F_BLK_IOBUF;
+	imu->dir             = (req.flags & IORING_BUF_ALLOC_READ) ?
+				IO_IMU_DEST : IO_IMU_SOURCE;
+	imu->release         = io_release_blk_iobuf;
+	imu->priv            = imu;		/* self-reference for release */
+	imu->blk_q           = q;
+	imu->blk_q_limits_gen = q->limits_gen;
+	imu->blk_iobuf_order = pool->order;
+	imu->is_blk_iobuf    = true;
+	refcount_set(&imu->refs, 1);
+
+	node->buf          = imu;
+	data->nodes[index] = node;
+
+	fput(file);
+	return 0;
+
+out_free_folios:
+	for (unsigned int j = 0; j < i; j++) {
+		struct folio *f = page_folio(imu->bvec[j].bv_page);
+
+		blk_iobuf_free_folio(q, f);
+	}
+	io_cache_free(&ctx->node_cache, node);
+out_free_imu:
+	kvfree(imu);
+out_put_q:
+	blk_put_queue(q);
+out_fput:
+	fput(file);
+	return ret;
+}
+
+#else /* !CONFIG_BLK_IOBUF_POOL */
+
+int io_register_buffers_alloc_for_file(struct io_ring_ctx *ctx,
+					void __user *arg)
+{
+	return -EOPNOTSUPP;
+}
+
+#endif /* CONFIG_BLK_IOBUF_POOL */
+
+/**
+ * io_uring_cmd_fixed_buf_is_blk_iobuf - validate pool buffer for cmd
+ * @ioucmd:    the uring_cmd in flight (must have IORING_URING_CMD_FIXED set)
+ * @issue_flags: from the submission path
+ * @expected_q: the queue the caller expects the buffer to be bound to
+ *
+ * Returns true if the fixed buffer is a blk_iobuf pool allocation AND is
+ * bound to @expected_q with an up-to-date limits_gen.
+ *
+ * Callers (e.g. NVMe passthrough validation) should reject the command if
+ * this returns false when they require a verified pool buffer.
+ */
+bool io_uring_cmd_fixed_buf_is_blk_iobuf(struct io_uring_cmd *ioucmd,
+					  unsigned int issue_flags,
+					  struct request_queue *expected_q)
+{
+	struct io_kiocb *req;
+	struct io_rsrc_node *node;
+	struct io_mapped_ubuf *imu;
+
+	if (!IS_ENABLED(CONFIG_BLK_IOBUF_POOL))
+		return false;
+	if (!(ioucmd->flags & IORING_URING_CMD_FIXED))
+		return false;
+
+	req = cmd_to_io_kiocb(ioucmd);
+	node = io_find_buf_node(req, issue_flags);
+	if (!node)
+		return false;
+
+	imu = node->buf;
+	if (!imu->is_blk_iobuf)
+		return false;
+	if (imu->blk_q != expected_q)
+		return false;
+	if (imu->blk_q_limits_gen != expected_q->limits_gen)
+		return false;
+
+	return true;
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_fixed_buf_is_blk_iobuf);
+
+/**
+ * io_uring_cmd_fixed_buf_get_imu - return the io_mapped_ubuf for a fixed cmd
+ *
+ * Returns the imu or NULL if none is found.  The caller is responsible for
+ * not holding the imu beyond the lifetime of the buffer table lock.
+ */
+struct io_mapped_ubuf *io_uring_cmd_fixed_buf_get_imu(
+					struct io_uring_cmd *ioucmd,
+					unsigned int issue_flags)
+{
+	struct io_kiocb *req;
+	struct io_rsrc_node *node;
+
+	if (!(ioucmd->flags & IORING_URING_CMD_FIXED))
+		return NULL;
+
+	req = cmd_to_io_kiocb(ioucmd);
+	node = io_find_buf_node(req, issue_flags);
+	return node ? node->buf : NULL;
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_fixed_buf_get_imu);
+
+/**
+ * io_uring_cmd_blk_iobuf_validate - validate pool buffer queue association
+ *
+ * Returns 0 if not an iobuf buffer, 1 if iobuf and valid, -ESTALE if stale.
+ */
+int io_uring_cmd_blk_iobuf_validate(struct io_uring_cmd *ioucmd,
+				     unsigned int issue_flags,
+				     struct request_queue *expected_q)
+{
+	struct io_mapped_ubuf *imu;
+
+	if (!IS_ENABLED(CONFIG_BLK_IOBUF_POOL))
+		return 0;
+
+	imu = io_uring_cmd_fixed_buf_get_imu(ioucmd, issue_flags);
+	if (!imu || !imu->is_blk_iobuf)
+		return 0;
+
+	if (imu->blk_q != expected_q ||
+	    imu->blk_q_limits_gen != expected_q->limits_gen)
+		return -ESTALE;
+
+	return 1;
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_blk_iobuf_validate);
 
 /*
  * Copy the registered buffers from the source ring whose file descriptor

@@ -723,6 +723,12 @@ enum io_uring_register_op {
 	/* register bpf filtering programs */
 	IORING_REGISTER_BPF_FILTER		= 37,
 
+	/*
+	 * Allocate fixed buffers from a block device's queue iobuf pool.
+	 * Arg points to struct io_uring_buf_alloc_for_file.
+	 */
+	IORING_REGISTER_BUFFERS_ALLOC_FOR_FILE	= 38,
+
 	/* this goes last */
 	IORING_REGISTER_LAST,
 
@@ -852,6 +858,35 @@ struct io_uring_clone_buffers {
 	__u32	dst_off;
 	__u32	nr;
 	__u32	pad[3];
+};
+
+/*
+ * Flags for IORING_REGISTER_BUFFERS_ALLOC_FOR_FILE
+ */
+enum {
+	/* Fail if pool order < min_order */
+	IORING_BUF_ALLOC_STRICT_ORDER		= (1U << 0),
+	/* Fail if queue has no iobuf pool */
+	IORING_BUF_ALLOC_REQUIRE_QUEUE_POOL	= (1U << 1),
+	/* Fall back to page allocation if pool depleted */
+	IORING_BUF_ALLOC_ALLOW_FALLBACK		= (1U << 2),
+	/* Buffer is for reads (device -> memory) */
+	IORING_BUF_ALLOC_READ			= (1U << 3),
+	/* Buffer is for writes (memory -> device) */
+	IORING_BUF_ALLOC_WRITE			= (1U << 4),
+	/* Map buffer into user address space */
+	IORING_BUF_ALLOC_MMAP			= (1U << 5),
+};
+
+struct io_uring_buf_alloc_for_file {
+	__u32	fd;		/* block device fd (or fixed-file index) */
+	__u32	index;		/* fixed-buffer slot to register into */
+	__u32	nr_buffers;	/* number of pool-folio buffers per slot */
+	__u32	flags;		/* IORING_BUF_ALLOC_* */
+	__u64	buffer_size;	/* requested buffer size in bytes */
+	__u32	min_order;	/* minimum folio order (0 = any) */
+	__u32	pref_order;	/* preferred folio order (0 = use queue default) */
+	__u32	reserved[2];
 };
 
 struct io_uring_buf {
