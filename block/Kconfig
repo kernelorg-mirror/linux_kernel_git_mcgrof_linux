@@ -231,4 +231,28 @@ config BLK_ERROR_INJECTION
 
 source "block/Kconfig.iosched"
 
+config BLK_IOBUF_POOL
+	bool "Block queue iobuf folio pool (EXPERIMENTAL)"
+	default n
+	help
+	  Adds a per-queue pool of compound folios sized to match device
+	  geometry (io_min, io_opt, max_hw_sectors/max_segments). Passthrough
+	  and DIO paths can draw from this pool to avoid building large
+	  scatter/gather lists.
+
+	  The pool is optional and failure-tolerant: if allocation fails the
+	  I/O path falls back to normal page allocation.
+
+	  If unsure, say N.
+
+config BLK_IOBUF_POOL_KUNIT_TEST
+	tristate "KUnit tests for blk_iobuf_pool order-selection" if !KUNIT_ALL_TESTS
+	depends on KUNIT && BLK_IOBUF_POOL
+	default KUNIT_ALL_TESTS
+	help
+	  Enable this option to run KUnit tests for blk_iobuf_choose_order()
+	  and related order-selection logic.
+
+	  If unsure, say N.
+
 endif # BLOCK
