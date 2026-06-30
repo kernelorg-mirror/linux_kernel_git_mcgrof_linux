@@ -1511,4 +1511,14 @@ config LAZY_MMU_MODE_KUNIT_TEST
 
 source "mm/damon/Kconfig"
 
+config MEMPOOL_FOLIO_KUNIT_TEST
+	tristate "KUnit tests for folio mempool" if !KUNIT_ALL_TESTS
+	depends on KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Enable this option to run KUnit tests for the folio-backed mempool
+	  helpers (mempool_alloc_folio / mempool_free_folio).
+
+	  If unsure, say N.
+
 endmenu
