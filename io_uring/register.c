@@ -969,6 +969,12 @@ static int __io_uring_register(struct io_ring_ctx *ctx, unsigned opcode,
 			WRITE_ONCE(ctx->bpf_filters,
 				   ctx->restrictions.bpf_filters->filters);
 		break;
+	case IORING_REGISTER_BUFFERS_ALLOC_FOR_FILE:
+		ret = -EINVAL;
+		if (nr_args != 1)
+			break;
+		ret = io_register_buffers_alloc_for_file(ctx, arg);
+		break;
 	default:
 		ret = -EINVAL;
 		break;
