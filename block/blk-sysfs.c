@@ -7,6 +7,7 @@
 #include <linux/module.h>
 #include <linux/bio.h>
 #include <linux/blkdev.h>
+#include <linux/blk-iobuf.h>
 #include <linux/backing-dev.h>
 #include <linux/blktrace_api.h>
 #include <linux/debugfs.h>
@@ -731,6 +732,35 @@ static ssize_t queue_wb_lat_store(struct gendisk *disk, const char *page,
 QUEUE_RW_ENTRY(queue_wb_lat, "wbt_lat_usec");
 #endif
 
+#ifdef CONFIG_BLK_IOBUF_POOL
+QUEUE_RO_ENTRY(blk_iobuf_sysfs_enabled,   "iobuf_pool_enabled");
+QUEUE_RO_ENTRY(blk_iobuf_sysfs_order,     "iobuf_pool_order");
+QUEUE_RO_ENTRY(blk_iobuf_sysfs_folio_size, "iobuf_pool_folio_size");
+QUEUE_RO_ENTRY(blk_iobuf_sysfs_reasons,   "iobuf_pool_reasons");
+QUEUE_RO_ENTRY(blk_iobuf_sysfs_min_folios, "iobuf_pool_min_folios");
+QUEUE_RO_ENTRY(blk_iobuf_sysfs_in_use,    "iobuf_pool_in_use");
+QUEUE_RO_ENTRY(blk_iobuf_sysfs_allocs,    "iobuf_pool_allocs");
+QUEUE_RO_ENTRY(blk_iobuf_sysfs_misses,    "iobuf_pool_misses");
+QUEUE_RO_ENTRY(blk_iobuf_sysfs_fallbacks, "iobuf_pool_fallbacks");
+
+static const struct attribute *const blk_iobuf_queue_attrs[] = {
+	&blk_iobuf_sysfs_enabled_entry.attr,
+	&blk_iobuf_sysfs_order_entry.attr,
+	&blk_iobuf_sysfs_folio_size_entry.attr,
+	&blk_iobuf_sysfs_reasons_entry.attr,
+	&blk_iobuf_sysfs_min_folios_entry.attr,
+	&blk_iobuf_sysfs_in_use_entry.attr,
+	&blk_iobuf_sysfs_allocs_entry.attr,
+	&blk_iobuf_sysfs_misses_entry.attr,
+	&blk_iobuf_sysfs_fallbacks_entry.attr,
+	NULL,
+};
+
+static const struct attribute_group blk_iobuf_queue_attr_group = {
+	.attrs_const = blk_iobuf_queue_attrs,
+};
+#endif /* CONFIG_BLK_IOBUF_POOL */
+
 /* Common attributes for bio-based and request-based queues. */
 static const struct attribute *const queue_attrs[] = {
 	/*
@@ -914,6 +944,9 @@ static const struct sysfs_ops queue_sysfs_ops = {
 static const struct attribute_group *blk_queue_attr_groups[] = {
 	&queue_attr_group,
 	&blk_mq_queue_attr_group,
+#ifdef CONFIG_BLK_IOBUF_POOL
+	&blk_iobuf_queue_attr_group,
+#endif
 	NULL
 };
 
