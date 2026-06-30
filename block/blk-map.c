@@ -7,13 +7,18 @@
 #include <linux/module.h>
 #include <linux/bio.h>
 #include <linux/blkdev.h>
+#include <linux/blk-iobuf.h>
 #include <linux/uio.h>
+#if IS_ENABLED(CONFIG_BLK_IOBUF_POOL)
+#include <trace/events/block_iobuf.h>
+#endif
 
 #include "blk.h"
 
 struct bio_map_data {
 	bool is_our_pages : 1;
 	bool is_null_mapped : 1;
+	bool is_iobuf : 1;	/* allocated via pool folios, not individual pages */
 	struct iov_iter iter;
 	struct iovec iov[];
 };
@@ -481,6 +486,188 @@ static int blk_rq_map_user_bvec(struct request *rq, const struct iov_iter *iter)
 	return ret;
 }
 
+#if IS_ENABLED(CONFIG_BLK_IOBUF_POOL)
+/*
+ * Private tracking for pool-folio bounce bios.  Stored in bio->bi_private when
+ * pool folios are used so bio_uncopy_user_iobuf() can free them back to the
+ * queue pool rather than through bio_free_pages().
+ */
+struct bio_iobuf_data {
+	struct bio_map_data bmd;	/* must be first */
+	struct request_queue *q;
+	struct folio **folios;
+	unsigned int nr_folios;
+};
+
+static void bio_free_iobuf_folios(struct bio_iobuf_data *ibd)
+{
+	unsigned int i;
+
+	for (i = 0; i < ibd->nr_folios; i++) {
+		if (ibd->folios[i])
+			blk_iobuf_free_folio(ibd->q, ibd->folios[i]);
+	}
+	kfree(ibd->folios);
+}
+
+static int bio_uncopy_user_iobuf(struct bio *bio)
+{
+	struct bio_iobuf_data *ibd = bio->bi_private;
+	struct bio_map_data *bmd = &ibd->bmd;
+	int ret = 0;
+
+	if (!bmd->is_null_mapped) {
+		if (!current->mm)
+			ret = -EINTR;
+		else if (bio_data_dir(bio) == READ)
+			ret = bio_copy_to_iter(bio, bmd->iter);
+	}
+	bio_free_iobuf_folios(ibd);
+	kfree(ibd);
+	return ret;
+}
+
+/**
+ * bio_copy_user_iov_iobuf - copy user data using pool-allocated folios
+ *
+ * Maps user I/O into a bio using higher-order folios from the queue's iobuf
+ * pool.  Falls back to page-by-page allocation if pool is exhausted or the
+ * request is not aligned.
+ *
+ * Returns 0 on success (pool or fallback), <0 on hard error.
+ */
+static int bio_copy_user_iov_iobuf(struct request *rq, struct iov_iter *iter,
+				   gfp_t gfp_mask)
+{
+	struct request_queue *q = rq->q;
+	struct bio_iobuf_data *ibd;
+	struct folio **folios;
+	unsigned long len = iter->count;
+	unsigned int folio_size = blk_iobuf_pool_folio_size(q);
+	unsigned int nr_folios;
+	struct bio *bio;
+	unsigned int i;
+	int ret;
+
+	/* Only handle whole-folio-aligned sizes for now */
+	if (!IS_ALIGNED(len, folio_size))
+		return -EREMOTEIO;
+
+	nr_folios = DIV_ROUND_UP(len, folio_size);
+
+	/*
+	 * Allocate ibd without the bmd.iov[] flexible array: for writes
+	 * we don't need the original iov after copy_from_iter, and for reads
+	 * (not yet implemented) we'll revisit.  The separate folios array
+	 * tracks pool allocations; iov overlap with flex array is avoided.
+	 */
+	ibd = kzalloc(sizeof(*ibd), gfp_mask);
+	if (!ibd)
+		return -ENOMEM;
+
+	folios = kcalloc(nr_folios, sizeof(*folios), gfp_mask);
+	if (!folios) {
+		kfree(ibd);
+		return -ENOMEM;
+	}
+
+	for (i = 0; i < nr_folios; i++) {
+		folios[i] = blk_iobuf_alloc_folio(q,
+				(gfp_mask | __GFP_NOWARN) & ~__GFP_DIRECT_RECLAIM);
+		if (!folios[i]) {
+			/* Pool exhausted; log fallback and bail */
+			blk_iobuf_inc_fallback(q);
+			trace_block_iobuf_fallback(q, "pool_exhausted");
+			ret = -EREMOTEIO;
+			goto free_folios;
+		}
+	}
+
+	bio = blk_rq_map_bio_alloc(rq, nr_folios, gfp_mask);
+	if (!bio) {
+		ret = -ENOMEM;
+		goto free_folios;
+	}
+
+	for (i = 0; i < nr_folios; i++) {
+		unsigned int chunk = min_t(unsigned long, len, folio_size);
+
+		if (!bio_add_folio(bio, folios[i], chunk, 0)) {
+			ret = -EINVAL;
+			goto put_bio;
+		}
+		len -= chunk;
+	}
+
+	ibd->bmd.is_our_pages   = true;
+	ibd->bmd.is_null_mapped = false;
+	ibd->bmd.is_iobuf       = true;
+	ibd->q         = q;
+	ibd->folios    = folios;
+	ibd->nr_folios = nr_folios;
+
+	if (iov_iter_rw(iter) == WRITE) {
+		ret = bio_copy_from_iter(bio, iter);
+		if (ret)
+			goto put_bio;
+	} else {
+		zero_fill_bio(bio);
+		iov_iter_advance(iter, bio->bi_iter.bi_size);
+	}
+
+	bio->bi_private = ibd;
+	bio->bi_end_io = NULL;		/* bio_uncopy_user_iobuf called on unmap */
+
+	ret = blk_rq_append_bio(rq, bio);
+	if (ret)
+		goto put_bio;
+
+	trace_block_iobuf_bounce_submit(q, bio->bi_iter.bi_size, nr_folios,
+					bio_op(bio));
+	return 0;
+
+put_bio:
+	blk_mq_map_bio_put(bio);
+free_folios:
+	for (i = 0; i < nr_folios; i++)
+		if (folios[i])
+			blk_iobuf_free_folio(q, folios[i]);
+	kfree(folios);
+	kfree(ibd);
+	return ret;
+}
+
+static bool blk_rq_iobuf_eligible(struct request_queue *q,
+				  const struct iov_iter *iter,
+				  gfp_t gfp_mask)
+{
+	unsigned int fsize;
+	unsigned long align;
+
+	if (!blk_queue_iobuf_pool_enabled(q))
+		return false;
+
+	fsize = blk_iobuf_pool_folio_size(q);
+	if (!fsize)
+		return false;
+	align = (unsigned long)(fsize - 1);
+
+	/* Require size alignment to pool folio size */
+	if (!IS_ALIGNED(iter->count, fsize))
+		return false;
+
+	/* User buffer must be page-aligned at minimum */
+	if (iov_iter_alignment(iter) & align)
+		return false;
+
+	/* Only plain read/write */
+	if (!user_backed_iter(iter) && !iov_iter_is_bvec(iter))
+		return false;
+
+	return true;
+}
+#endif /* CONFIG_BLK_IOBUF_POOL */
+
 /**
  * blk_rq_map_user_iov - map user data to a request, for passthrough requests
  * @q:		request queue where request should be inserted
@@ -529,6 +716,20 @@ int blk_rq_map_user_iov(struct request_queue *q, struct request *rq,
 
 	i = *iter;
 	do {
+		/*
+		 * Try iobuf pool bounce first when copy is needed and the pool
+		 * can provide aligned folios for this request.
+		 */
+#ifdef CONFIG_BLK_IOBUF_POOL
+		if (copy && !map_data && blk_rq_iobuf_eligible(q, &i, gfp_mask)) {
+			ret = bio_copy_user_iov_iobuf(rq, &i, gfp_mask);
+			if (!ret)
+				goto next;
+			if (ret != -EREMOTEIO)
+				goto unmap_rq;
+			/* not eligible after all; fall through to standard copy */
+		}
+#endif
 		if (copy)
 			ret = bio_copy_user_iov(rq, map_data, &i, gfp_mask);
 		else
@@ -538,6 +739,7 @@ int blk_rq_map_user_iov(struct request_queue *q, struct request *rq,
 				ret = -EINVAL;
 			goto unmap_rq;
 		}
+next:
 		if (!bio)
 			bio = rq->bio;
 	} while (iov_iter_count(&i));
@@ -618,7 +820,14 @@ int blk_rq_unmap_user(struct bio *bio)
 
 	while (bio) {
 		if (bio->bi_private) {
-			ret2 = bio_uncopy_user(bio);
+			struct bio_map_data *bmd = bio->bi_private;
+
+#ifdef CONFIG_BLK_IOBUF_POOL
+			if (bmd->is_iobuf)
+				ret2 = bio_uncopy_user_iobuf(bio);
+			else
+#endif
+				ret2 = bio_uncopy_user(bio);
 			if (ret2 && !ret)
 				ret = ret2;
 		} else {
