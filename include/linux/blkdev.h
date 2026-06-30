@@ -30,6 +30,7 @@
 
 struct module;
 struct request_queue;
+struct blk_iobuf_pool;
 struct elevator_queue;
 struct blk_trace;
 struct request;
@@ -659,6 +660,13 @@ struct request_queue {
 	 * Serializes all debugfs metadata operations using the above dentries.
 	 */
 	struct mutex		debugfs_mutex;
+
+	/* Monotonic counter bumped when queue geometry changes significantly */
+	u32			limits_gen;
+#ifdef CONFIG_BLK_IOBUF_POOL
+	/* Optional queue-associated higher-order folio pool (see blk-iobuf.h) */
+	struct blk_iobuf_pool	*iobuf_pool;
+#endif
 };
 
 /* Keep blk_queue_flag_name[] in sync with the definitions below */
