@@ -27,6 +27,7 @@
 #include "nvme.h"
 #include "fabrics.h"
 #include <linux/nvme-auth.h>
+#include <linux/blk-iobuf.h>
 
 #define CREATE_TRACE_POINTS
 #include "trace.h"
@@ -105,6 +106,25 @@ static bool disable_pi_offsets = false;
 module_param(disable_pi_offsets, bool, 0444);
 MODULE_PARM_DESC(disable_pi_offsets,
 	"disable protection information if it has an offset");
+
+/*
+ * iobuf pool support: queue-associated higher-order folio pools driven by
+ * device geometry (io_min, io_opt, max_hw_sectors/max_segments).
+ *
+ * off   - never create pools
+ * auto  - create pools when geometry warrants it (default); ignore failures
+ * force - require pool creation; warn loudly on failure
+ */
+enum nvme_iobuf_pool_mode {
+	NVME_IOBUF_POOL_OFF  = 0,
+	NVME_IOBUF_POOL_AUTO = 1,
+	NVME_IOBUF_POOL_FORCE = 2,
+};
+
+static int nvme_iobuf_pool_mode = NVME_IOBUF_POOL_AUTO;
+module_param_named(iobuf_pool, nvme_iobuf_pool_mode, int, 0644);
+MODULE_PARM_DESC(iobuf_pool,
+	"Queue iobuf pool mode: 0=off, 1=auto (default), 2=force");
 
 /*
  * nvme_wq - hosts nvme related works that are not reset or delete
@@ -2489,6 +2509,22 @@ static int nvme_update_ns_info_block(struct nvme_ns *ns,
 	if (ret) {
 		blk_mq_unfreeze_queue(ns->disk->queue, memflags);
 		goto out;
+	}
+
+	/* Opportunistically create (or update) a queue iobuf pool */
+	if (IS_ENABLED(CONFIG_BLK_IOBUF_POOL) &&
+	    nvme_iobuf_pool_mode != NVME_IOBUF_POOL_OFF) {
+		const struct blk_iobuf_pool_config pool_cfg = {
+			.max_order      = blk_iobuf_pool_max_order,
+			.min_nr         = blk_iobuf_pool_min_folios,
+			.prefer_io_opt  = blk_iobuf_pool_prefer_io_opt,
+		};
+		int pool_ret = blk_queue_init_iobuf_pool(ns->disk->queue, &lim,
+							 &pool_cfg);
+		if (pool_ret && nvme_iobuf_pool_mode == NVME_IOBUF_POOL_FORCE)
+			dev_warn(ns->ctrl->device,
+				 "iobuf pool creation failed for %s: %d\n",
+				 ns->disk->disk_name, pool_ret);
 	}
 
 	set_capacity_and_notify(ns->disk, capacity);
