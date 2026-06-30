@@ -4,6 +4,7 @@
  * Copyright (c) 2017-2021 Christoph Hellwig.
  */
 #include <linux/blk-integrity.h>
+#include <linux/blk-iobuf.h>
 #include <linux/ptrace.h>	/* for force_successful_syscall_return */
 #include <linux/nvme_ioctl.h>
 #include <linux/io_uring/cmd.h>
@@ -490,6 +491,28 @@ static int nvme_uring_cmd_io(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 
 	if (d.data_len && (ioucmd->flags & IORING_URING_CMD_FIXED)) {
 		int ddir = nvme_is_write(&c) ? WRITE : READ;
+
+		/*
+		 * If the fixed buffer was allocated from a queue iobuf pool,
+		 * verify it is bound to THIS queue and still valid.  A stale
+		 * association (limits_gen mismatch) means the pool was
+		 * recreated with different geometry; reject to avoid mis-sized
+		 * DMA.
+		 */
+		if (IS_ENABLED(CONFIG_BLK_IOBUF_POOL) && !vec) {
+			struct request_queue *req_q = ns ? ns->queue :
+						      ctrl->admin_q;
+			int iobuf_ret = io_uring_cmd_blk_iobuf_validate(
+						ioucmd, issue_flags, req_q);
+			/*
+			 * -ESTALE: buffer was allocated from a pool for a
+			 * different queue or after a geometry change.  Reject
+			 * to avoid DMA descriptors that are wrong-sized for
+			 * this queue.
+			 */
+			if (iobuf_ret < 0)
+				return iobuf_ret;
+		}
 
 		if (vec)
 			ret = io_uring_cmd_import_fixed_vec(ioucmd,
