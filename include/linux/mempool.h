@@ -116,4 +116,23 @@ void mempool_free_pages(void *element, void *pool_data);
 	mempool_create((_min_nr), mempool_alloc_pages,			\
 		       mempool_free_pages, (void *)(long)(_order))
 
+/*
+ * A mempool_alloc_t and mempool_free_t for a folio allocator that
+ * allocates compound folios of the order specified by pool_data.
+ * The caller receives and must return a struct folio *.
+ */
+void *mempool_alloc_folio(gfp_t gfp_mask, void *pool_data);
+void mempool_free_folio(void *element, void *pool_data);
+
+#define mempool_init_folio_pool(_pool, _min_nr, _order)			\
+	mempool_init(_pool, (_min_nr), mempool_alloc_folio,		\
+		     mempool_free_folio, (void *)(long)(_order))
+#define mempool_create_folio_pool(_min_nr, _order)			\
+	mempool_create((_min_nr), mempool_alloc_folio,			\
+		       mempool_free_folio, (void *)(long)(_order))
+#define mempool_create_folio_pool_node(_min_nr, _order, _gfp, _nid)	\
+	mempool_create_node((_min_nr), mempool_alloc_folio,		\
+			    mempool_free_folio, (void *)(long)(_order),	\
+			    (_gfp), (_nid))
+
 #endif /* _LINUX_MEMPOOL_H */

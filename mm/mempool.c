@@ -757,3 +757,20 @@ void mempool_free_pages(void *element, void *pool_data)
 	__free_pages(element, order);
 }
 EXPORT_SYMBOL(mempool_free_pages);
+
+/*
+ * A mempool_alloc_t and mempool_free_t for a folio allocator that allocates
+ * compound folios of the order specified by pool_data.
+ */
+void *mempool_alloc_folio(gfp_t gfp_mask, void *pool_data)
+{
+	int order = (int)(long)pool_data;
+	return folio_alloc(gfp_mask, order);
+}
+EXPORT_SYMBOL(mempool_alloc_folio);
+
+void mempool_free_folio(void *element, void *pool_data)
+{
+	folio_put(element);
+}
+EXPORT_SYMBOL(mempool_free_folio);
