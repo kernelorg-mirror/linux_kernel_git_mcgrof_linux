@@ -174,6 +174,7 @@ static int bio_copy_user_iov(struct request *rq, struct rq_map_data *map_data,
 	 */
 	bmd->is_our_pages = !map_data;
 	bmd->is_null_mapped = (map_data && map_data->null_mapped);
+	bmd->is_iobuf = false;
 
 	nr_pages = bio_max_segs(DIV_ROUND_UP(offset + len, PAGE_SIZE));
 
