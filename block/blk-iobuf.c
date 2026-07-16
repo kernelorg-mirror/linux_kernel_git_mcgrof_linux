@@ -44,6 +44,19 @@ module_param_named(iobuf_pool_prefer_io_opt, blk_iobuf_pool_prefer_io_opt,
 MODULE_PARM_DESC(iobuf_pool_prefer_io_opt,
 		 "Use io_opt to increase pool folio order (default off)");
 
+/*
+ * Operator override, independent of device geometry.  Device NVMe hints like
+ * io_opt are performance hints; io_opt==0 means "unspecified", not "a pool is
+ * pointless".  When the benefit is host-side (io_uring registered pool buffers,
+ * deterministic large I/O, large folios), the operator -- not the drive -- has
+ * the reason.  -1 = auto (use geometry); 0 = no pool; >0 = force this folio
+ * order (capped by iobuf_pool_max_order).  Does NOT touch queue limits.
+ */
+int blk_iobuf_pool_force_order = -1;
+module_param_named(iobuf_pool_force_order, blk_iobuf_pool_force_order, int, 0644);
+MODULE_PARM_DESC(iobuf_pool_force_order,
+		 "Force pool folio order regardless of geometry (-1=auto, 0=off, >0=order)");
+
 /* --- Core helpers --- */
 
 bool blk_queue_iobuf_pool_enabled(struct request_queue *q)
@@ -95,6 +108,23 @@ unsigned int blk_iobuf_choose_order(const struct queue_limits *lim,
 
 	if (!max_order)
 		max_order = blk_iobuf_pool_max_order;
+
+	/*
+	 * Operator override wins over geometry.  This is how a plain 4 KiB-IU
+	 * NVMe (io_min=4096, io_opt=0, small seg_geom) can still get a pool for
+	 * io_uring registered large-I/O buffers: the reason is the workload, not
+	 * a device hint.
+	 */
+	if (blk_iobuf_pool_force_order >= 0) {
+		unsigned int forced = blk_iobuf_pool_force_order;
+
+		if (!forced)
+			return 0;
+		forced = min_t(unsigned int, forced, max_order);
+		if (reason_mask)
+			*reason_mask = BLK_IOBUF_REASON_FORCE;
+		return forced;
+	}
 
 	max_hw_bytes = (unsigned long)lim->max_hw_sectors << SECTOR_SHIFT;
 	if (!max_hw_bytes || !lim->max_segments)

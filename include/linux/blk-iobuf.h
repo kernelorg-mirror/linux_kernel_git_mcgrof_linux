@@ -21,6 +21,7 @@ struct folio;
 #define BLK_IOBUF_REASON_IO_MIN		BIT(0)	/* io_min > PAGE_SIZE */
 #define BLK_IOBUF_REASON_SEG_GEOM	BIT(1)	/* max_hw_bytes/segs > PAGE_SIZE */
 #define BLK_IOBUF_REASON_IO_OPT	BIT(2)	/* io_opt >= PAGE_SIZE and preferred */
+#define BLK_IOBUF_REASON_FORCE		BIT(3)	/* operator forced via force_order */
 
 /**
  * struct blk_iobuf_pool_config - admin-visible tunables for pool creation
