@@ -229,6 +229,18 @@ config BLK_ERROR_INJECTION
 
 	  See Documentation/block/error-injection.rst for details.
 
+config BLK_IOBUF_POOL
+	bool "Block layer bounded iobuf folio pool"
+	default n
+	help
+	  Provide refcounted, pre-provisioned per-queue pools of higher-order
+	  folios that can be handed to userspace as persistent io_uring fixed
+	  buffers. The pool preallocates a bounded inventory so suitable
+	  folios are predictably available at registration time rather than
+	  allocated opportunistically under memory pressure.
+
+	  Enabling this alone only builds the pool machinery. If unsure, say N.
+
 source "block/Kconfig.iosched"
 
 endif # BLOCK
