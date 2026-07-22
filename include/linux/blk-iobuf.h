@@ -22,6 +22,7 @@
 
 struct folio;
 struct blk_iobuf_pool;
+struct request_queue;
 
 #ifdef CONFIG_BLK_IOBUF_POOL
 
@@ -39,6 +40,11 @@ int blk_iobuf_pool_alloc_batch(struct blk_iobuf_pool *pool,
 			       struct folio **folios, unsigned int nr_folios);
 void blk_iobuf_pool_free_batch(struct blk_iobuf_pool *pool,
 			       struct folio **folios, unsigned int nr_folios);
+
+int blk_queue_set_iobuf_pool(struct request_queue *q,
+			     struct blk_iobuf_pool *pool);
+struct blk_iobuf_pool *blk_queue_get_iobuf_pool(struct request_queue *q);
+void blk_queue_clear_iobuf_pool(struct request_queue *q);
 
 unsigned int blk_iobuf_pool_order(const struct blk_iobuf_pool *pool);
 unsigned int blk_iobuf_pool_folio_size(const struct blk_iobuf_pool *pool);
@@ -74,6 +80,20 @@ blk_iobuf_pool_alloc_batch(struct blk_iobuf_pool *pool,
 static inline void
 blk_iobuf_pool_free_batch(struct blk_iobuf_pool *pool,
 			  struct folio **folios, unsigned int nr_folios) {}
+
+static inline int blk_queue_set_iobuf_pool(struct request_queue *q,
+					   struct blk_iobuf_pool *pool)
+{
+	return 0;
+}
+
+static inline struct blk_iobuf_pool *
+blk_queue_get_iobuf_pool(struct request_queue *q)
+{
+	return NULL;
+}
+
+static inline void blk_queue_clear_iobuf_pool(struct request_queue *q) {}
 
 static inline unsigned int blk_iobuf_pool_order(const struct blk_iobuf_pool *p)
 {

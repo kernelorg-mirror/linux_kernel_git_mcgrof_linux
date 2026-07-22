@@ -33,6 +33,7 @@ struct request_queue;
 struct elevator_queue;
 struct blk_trace;
 struct request;
+struct blk_iobuf_pool;
 struct sg_io_hdr;
 struct blkcg_gq;
 struct blk_flush_queue;
@@ -537,6 +538,12 @@ struct request_queue {
 	struct kobject *mq_kobj;
 
 	struct queue_limits	limits;
+
+#ifdef CONFIG_BLK_IOBUF_POOL
+	/* Bounded higher-order folio pool; queue holds one ref. */
+	struct blk_iobuf_pool __rcu *iobuf_pool;
+	struct mutex		iobuf_pool_lock;	/* serializes set/clear */
+#endif
 
 #ifdef CONFIG_PM
 	struct device		*dev;

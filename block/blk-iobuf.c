@@ -19,10 +19,12 @@
  * relies on that is added separately.
  */
 #include <linux/blk-iobuf.h>
+#include <linux/blkdev.h>
 #include <linux/gfp.h>
 #include <linux/kref.h>
 #include <linux/mempool.h>
 #include <linux/mm.h>
+#include <linux/mutex.h>
 #include <linux/overflow.h>
 #include <linux/rcupdate.h>
 #include <linux/sizes.h>
@@ -255,3 +257,78 @@ u64 blk_iobuf_pool_alloc_failures(const struct blk_iobuf_pool *pool)
 	return atomic64_read(&pool->alloc_failures);
 }
 EXPORT_SYMBOL_GPL(blk_iobuf_pool_alloc_failures);
+
+/*
+ * Queue attachment.
+ *
+ * q->iobuf_pool is RCU-published and the queue owns one reference on the pool
+ * it points at. q->iobuf_pool_lock serializes writers (set and clear) for real
+ * -- it is the lockdep condition on the rcu_replace_pointer below, not a bare
+ * "true". Lookups are lock-free.
+ */
+
+/**
+ * blk_queue_set_iobuf_pool - attach or replace a queue's iobuf pool
+ * @q:    request queue
+ * @pool: pool to attach
+ *
+ * Takes its own reference on @pool; the caller keeps its reference and must
+ * drop it. Drops the queue's reference to any previously attached pool after
+ * publishing the new one, so an outstanding provider buffer that still holds a
+ * reference to the old pool keeps it -- and its folios -- alive. Returns 0.
+ */
+int blk_queue_set_iobuf_pool(struct request_queue *q,
+			     struct blk_iobuf_pool *pool)
+{
+	struct blk_iobuf_pool *old;
+
+	blk_iobuf_pool_get(pool);
+	mutex_lock(&q->iobuf_pool_lock);
+	old = rcu_replace_pointer(q->iobuf_pool, pool,
+				  lockdep_is_held(&q->iobuf_pool_lock));
+	mutex_unlock(&q->iobuf_pool_lock);
+	if (old)
+		blk_iobuf_pool_put(old);
+	return 0;
+}
+EXPORT_SYMBOL_GPL(blk_queue_set_iobuf_pool);
+
+/**
+ * blk_queue_clear_iobuf_pool - detach and drop a queue's iobuf pool
+ * @q: request queue
+ */
+void blk_queue_clear_iobuf_pool(struct request_queue *q)
+{
+	struct blk_iobuf_pool *old;
+
+	mutex_lock(&q->iobuf_pool_lock);
+	old = rcu_replace_pointer(q->iobuf_pool, NULL,
+				  lockdep_is_held(&q->iobuf_pool_lock));
+	mutex_unlock(&q->iobuf_pool_lock);
+	if (old)
+		blk_iobuf_pool_put(old);
+}
+EXPORT_SYMBOL_GPL(blk_queue_clear_iobuf_pool);
+
+/**
+ * blk_queue_get_iobuf_pool - take a reference to a queue's iobuf pool
+ * @q: request queue
+ *
+ * Returns a referenced pool the caller must release with
+ * blk_iobuf_pool_put(), or NULL if the queue has no pool. Safe against
+ * concurrent replacement and teardown: the pointer is fetched under RCU and
+ * the reference taken with kref_get_unless_zero(), and the pool's final free
+ * is RCU-deferred.
+ */
+struct blk_iobuf_pool *blk_queue_get_iobuf_pool(struct request_queue *q)
+{
+	struct blk_iobuf_pool *pool;
+
+	rcu_read_lock();
+	pool = rcu_dereference(q->iobuf_pool);
+	if (pool && !kref_get_unless_zero(&pool->ref))
+		pool = NULL;
+	rcu_read_unlock();
+	return pool;
+}
+EXPORT_SYMBOL_GPL(blk_queue_get_iobuf_pool);

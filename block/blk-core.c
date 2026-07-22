@@ -44,6 +44,7 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/block.h>
 
+#include <linux/blk-iobuf.h>
 #include "blk.h"
 #include "blk-mq-sched.h"
 #include "blk-pm.h"
@@ -299,6 +300,7 @@ static void blk_free_queue_rcu(struct rcu_head *rcu_head)
 
 static void blk_free_queue(struct request_queue *q)
 {
+	blk_queue_clear_iobuf_pool(q);
 	blk_free_queue_stats(q->stats);
 	if (queue_is_mq(q))
 		blk_mq_release(q);
@@ -480,6 +482,9 @@ struct request_queue *blk_alloc_queue(struct queue_limits *lim, int node_id)
 
 	init_waitqueue_head(&q->mq_freeze_wq);
 	mutex_init(&q->mq_freeze_lock);
+#ifdef CONFIG_BLK_IOBUF_POOL
+	mutex_init(&q->iobuf_pool_lock);
+#endif
 
 	blkg_init_queue(q);
 
