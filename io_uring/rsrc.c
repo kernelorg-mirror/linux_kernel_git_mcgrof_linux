@@ -1078,6 +1078,91 @@ unlock:
 }
 EXPORT_SYMBOL_GPL(io_buffer_register_bvec);
 
+/**
+ * io_uring_cmd_register_bvecs - install a provider-owned kernel buffer
+ * @cmd:         the provider's uring_cmd
+ * @index:       empty slot in the ring's sparse fixed-buffer table
+ * @desc:        the buffer to register (see struct io_uring_cmd_buf_desc)
+ * @issue_flags: uring_cmd issue flags
+ *
+ * Copies @desc->bvecs into an io_uring-owned io_mapped_ubuf and installs it as
+ * a kernel-backed fixed buffer at @index. Unlike io_buffer_register_bvec(),
+ * which builds the bvecs from an in-flight request, the caller supplies the
+ * bvecs directly and keeps ownership of the backing pages via @desc's
+ * release/release_data until the slot is detached and its last user drops.
+ *
+ * On success io_uring owns one reference and calls @desc->release exactly once
+ * later; on failure the caller keeps ownership and @release is not called.
+ * Returns 0, or -EINVAL on a malformed descriptor, -EBUSY if @index is
+ * occupied, -ENOMEM on allocation failure.
+ */
+int io_uring_cmd_register_bvecs(struct io_uring_cmd *cmd, unsigned int index,
+				const struct io_uring_cmd_buf_desc *desc,
+				unsigned int issue_flags)
+{
+	struct io_ring_ctx *ctx = cmd_to_io_kiocb(cmd)->ctx;
+	struct io_rsrc_data *data = &ctx->buf_table;
+	struct io_mapped_ubuf *imu;
+	struct io_rsrc_node *node;
+	u64 total = 0;
+	unsigned int i;
+	int ret = 0;
+
+	if (!desc->nr_bvecs || !desc->len)
+		return -EINVAL;
+	if (!desc->dir || (desc->dir & ~(IO_URING_CMD_BUF_READ |
+					 IO_URING_CMD_BUF_WRITE)))
+		return -EINVAL;
+	for (i = 0; i < desc->nr_bvecs; i++)
+		total += desc->bvecs[i].bv_len;
+	if (total != desc->len || desc->len > MAX_RW_COUNT)
+		return -EINVAL;
+
+	io_ring_submit_lock(ctx, issue_flags);
+	if (index >= data->nr) {
+		ret = -EINVAL;
+		goto unlock;
+	}
+	index = array_index_nospec(index, data->nr);
+	if (data->nodes[index]) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+
+	node = io_rsrc_node_alloc(ctx, IORING_RSRC_BUFFER);
+	if (!node) {
+		ret = -ENOMEM;
+		goto unlock;
+	}
+	/* exact bvec count -- no overestimate, so alloc and free size agree */
+	imu = io_alloc_imu(ctx, desc->nr_bvecs);
+	if (!imu) {
+		io_cache_free(&ctx->node_cache, node);
+		ret = -ENOMEM;
+		goto unlock;
+	}
+
+	imu->ubuf = 0;
+	imu->len = desc->len;
+	imu->folio_shift = PAGE_SHIFT;
+	imu->nr_bvecs = desc->nr_bvecs;
+	refcount_set(&imu->refs, 1);
+	imu->release = desc->release;
+	imu->priv = desc->release_data;
+	imu->flags = IO_REGBUF_F_KBUF;
+	imu->dir = ((desc->dir & IO_URING_CMD_BUF_READ) ? IO_IMU_DEST : 0) |
+		   ((desc->dir & IO_URING_CMD_BUF_WRITE) ? IO_IMU_SOURCE : 0);
+	memcpy(imu->bvec, desc->bvecs,
+	       array_size(desc->nr_bvecs, sizeof(*desc->bvecs)));
+
+	node->buf = imu;
+	data->nodes[index] = node;
+unlock:
+	io_ring_submit_unlock(ctx, issue_flags);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_register_bvecs);
+
 int io_buffer_unregister_bvec(struct io_uring_cmd *cmd, unsigned int index,
 			      unsigned int issue_flags)
 {

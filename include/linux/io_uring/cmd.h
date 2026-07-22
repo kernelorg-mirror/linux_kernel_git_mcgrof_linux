@@ -188,4 +188,34 @@ int io_buffer_register_bvec(struct io_uring_cmd *cmd, struct request *rq,
 int io_buffer_unregister_bvec(struct io_uring_cmd *cmd, unsigned int index,
 			      unsigned int issue_flags);
 
+/* Direction bits for struct io_uring_cmd_buf_desc.dir. */
+#define IO_URING_CMD_BUF_READ	(1U << 0)	/* buffer is an I/O destination */
+#define IO_URING_CMD_BUF_WRITE	(1U << 1)	/* buffer is an I/O source */
+
+/**
+ * struct io_uring_cmd_buf_desc - a provider-owned kernel buffer to register
+ * @bvecs:        bvecs describing the provider's pages (copied by the helper)
+ * @nr_bvecs:     number of entries in @bvecs
+ * @len:          logical buffer length; must equal the sum of the bvec lengths
+ * @dir:          IO_URING_CMD_BUF_READ / _WRITE mask the buffer may be used for
+ * @release:      called once, after the slot is detached and the last in-flight
+ *                fixed-buffer user drops its reference, to free the backing
+ * @release_data: opaque argument passed to @release
+ *
+ * The provider retains ownership of the pages through @release_data until
+ * @release runs; io_uring copies only the bvec metadata.
+ */
+struct io_uring_cmd_buf_desc {
+	const struct bio_vec	*bvecs;
+	unsigned int		nr_bvecs;
+	size_t			len;
+	unsigned int		dir;
+	void			(*release)(void *data);
+	void			*release_data;
+};
+
+int io_uring_cmd_register_bvecs(struct io_uring_cmd *cmd, unsigned int index,
+				const struct io_uring_cmd_buf_desc *desc,
+				unsigned int issue_flags);
+
 #endif /* _LINUX_IO_URING_CMD_H */
