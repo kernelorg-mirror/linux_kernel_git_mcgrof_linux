@@ -241,6 +241,16 @@ config BLK_IOBUF_POOL
 
 	  Enabling this alone only builds the pool machinery. If unsure, say N.
 
+config BLK_IOBUF_POOL_KUNIT_TEST
+	tristate "KUnit tests for the block iobuf pool" if !KUNIT_ALL_TESTS
+	depends on BLK_IOBUF_POOL && KUNIT
+	default KUNIT_ALL_TESTS
+	help
+	  Unit tests for blk_iobuf_pool bounded capacity, strict checkout, and
+	  queue-attachment lifetime. Under KASAN they check the
+	  replace-while-outstanding use-after-free the refcount design
+	  prevents. If unsure, say N.
+
 source "block/Kconfig.iosched"
 
 endif # BLOCK

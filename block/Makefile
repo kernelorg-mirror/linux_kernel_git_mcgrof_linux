@@ -40,3 +40,4 @@ obj-$(CONFIG_BLK_INLINE_ENCRYPTION)	+= blk-crypto.o blk-crypto-profile.o \
 obj-$(CONFIG_BLK_INLINE_ENCRYPTION_FALLBACK)	+= blk-crypto-fallback.o
 obj-$(CONFIG_BLOCK_HOLDER_DEPRECATED)	+= holder.o
 obj-$(CONFIG_BLK_IOBUF_POOL)	+= blk-iobuf.o
+obj-$(CONFIG_BLK_IOBUF_POOL_KUNIT_TEST)	+= tests/blk-iobuf-kunit.o

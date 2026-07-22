@@ -33,8 +33,8 @@ void blk_iobuf_pool_put(struct blk_iobuf_pool *pool);
 
 /*
  * Strict, all-or-nothing checkout of @nr_folios folios from the pre-provisioned
- * inventory. Returns 0 with @folios filled, or -ENOBUFS with @folios untouched
- * and the pool unchanged. Never touches the page allocator.
+ * inventory. Returns 0 with @folios filled, or -ENOBUFS with every
+ * entry of @folios set to NULL and the pool unchanged. Never touches the page allocator.
  */
 int blk_iobuf_pool_alloc_batch(struct blk_iobuf_pool *pool,
 			       struct folio **folios, unsigned int nr_folios);

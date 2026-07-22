@@ -30,6 +30,7 @@
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/string.h>
 
 struct blk_iobuf_pool {
 	struct kref		ref;
@@ -164,8 +165,8 @@ static void blk_iobuf_note_high_water(struct blk_iobuf_pool *pool, int in_use)
  *
  * Draws @nr_folios folios from the preallocated inventory under the pool lock,
  * so two concurrent checkouts cannot each grab a partial set. Returns 0 with
- * @folios filled, or -ENOBUFS with @folios untouched and every partially-drawn
- * folio returned. Never allocates from the page allocator.
+ * @folios filled, or -ENOBUFS with every entry of @folios set to NULL and every
+ * partially-drawn folio returned. Never allocates from the page allocator.
  */
 int blk_iobuf_pool_alloc_batch(struct blk_iobuf_pool *pool,
 			       struct folio **folios, unsigned int nr_folios)
@@ -180,9 +181,12 @@ int blk_iobuf_pool_alloc_batch(struct blk_iobuf_pool *pool,
 	for (i = 0; i < nr_folios; i++) {
 		folios[i] = mempool_alloc_preallocated(&pool->folio_pool);
 		if (!folios[i]) {
-			while (i--)
-				mempool_free(folios[i], &pool->folio_pool);
+			unsigned int j;
+
+			for (j = 0; j < i; j++)
+				mempool_free(folios[j], &pool->folio_pool);
 			spin_unlock(&pool->lock);
+			memset(folios, 0, array_size(nr_folios, sizeof(*folios)));
 			atomic64_inc(&pool->alloc_failures);
 			return -ENOBUFS;
 		}
