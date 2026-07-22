@@ -8,6 +8,12 @@
 #include <linux/ktime.h>
 #include <linux/hrtimer.h>
 #include <linux/poll.h>
+#include <linux/bvec.h>
+#include <linux/fs.h>
+#include <linux/highmem.h>
+#include <linux/mm.h>
+#include <linux/refcount.h>
+#include <linux/slab.h>
 
 #include <linux/io_uring/cmd.h>
 #include <linux/io_uring_types.h>
@@ -19,14 +25,33 @@ struct io_mock_iocb {
 	int			res;
 };
 
+/*
+ * A mock provider buffer. It is jointly owned by the mock file (which reads
+ * back the accounting) and by io_uring (which holds it until the registered
+ * slot is detached and the last in-flight user drops). io_uring may run the
+ * release callback after the mock file is closed, so this record must outlive
+ * both -- hence the refcount, dropped by whichever owner is last.
+ */
+struct io_mock_regbuf {
+	refcount_t		refs;
+	atomic_t		released;
+	u64			len;
+	unsigned int		nr_pages;
+	struct page		**pages;
+};
+
 struct io_mock_file {
 	size_t			size;
 	u64			rw_delay_ns;
 	bool			pollable;
 	struct wait_queue_head	poll_wq;
+	struct io_mock_regbuf	*regbuf;
 };
 
 #define IO_VALID_COPY_CMD_FLAGS		IORING_MOCK_COPY_FROM
+#define IO_VALID_PROV_FLAGS		(IORING_MOCK_PROV_F_FILL_PATTERN | \
+					 IORING_MOCK_PROV_F_READ | \
+					 IORING_MOCK_PROV_F_WRITE)
 
 static int io_copy_regbuf(struct iov_iter *reg_iter, void __user *ubuf)
 {
@@ -90,11 +115,176 @@ static int io_cmd_copy_regbuf(struct io_uring_cmd *cmd, unsigned int issue_flags
 	return ret ? ret : -EFAULT;
 }
 
+static void io_mock_regbuf_put(struct io_mock_regbuf *rb)
+{
+	if (rb && refcount_dec_and_test(&rb->refs)) {
+		kfree(rb->pages);
+		kfree(rb);
+	}
+}
+
+/*
+ * io_uring's release callback: runs exactly once, after the registered slot
+ * is detached and the last in-flight fixed-buffer user drops. Free the backing
+ * pages, record that release ran, and drop io_uring's reference.
+ */
+static void io_mock_regbuf_release(void *data)
+{
+	struct io_mock_regbuf *rb = data;
+	unsigned int i;
+
+	for (i = 0; i < rb->nr_pages; i++)
+		__free_page(rb->pages[i]);
+	rb->nr_pages = 0;
+	atomic_set(&rb->released, 1);
+	io_mock_regbuf_put(rb);
+}
+
+/*
+ * Act as a buffer provider: allocate pages, describe them as a bvec array, and
+ * install them into an existing sparse registered-buffer slot via the generic
+ * provider helper. This exercises io_uring_cmd_register_bvecs() and its release
+ * path with no hardware.
+ */
+static int io_cmd_prov_register(struct io_uring_cmd *cmd,
+				unsigned int issue_flags)
+{
+	const struct io_uring_sqe *sqe = cmd->sqe;
+	struct io_mock_file *mf = cmd->file->private_data;
+	struct io_uring_mock_prov_register arg;
+	struct io_uring_mock_prov_register __user *uarg;
+	struct io_uring_cmd_buf_desc desc;
+	struct io_mock_regbuf *rb;
+	struct bio_vec *bvecs;
+	unsigned int i, nr_pages, dir;
+	u64 remaining;
+	int ret;
+
+	if (sqe->ioprio || sqe->__pad1 || sqe->addr3 || sqe->file_index)
+		return -EINVAL;
+	uarg = u64_to_user_ptr(READ_ONCE(sqe->addr));
+	if (READ_ONCE(sqe->len) != sizeof(arg))
+		return -EINVAL;
+	if (copy_from_user(&arg, uarg, sizeof(arg)))
+		return -EFAULT;
+	if (arg.__pad || !mem_is_zero(arg.__resv, sizeof(arg.__resv)))
+		return -EINVAL;
+	if (arg.flags & ~IO_VALID_PROV_FLAGS)
+		return -EINVAL;
+	if (!arg.len || arg.len > MAX_RW_COUNT)
+		return -EINVAL;
+
+	dir = ((arg.flags & IORING_MOCK_PROV_F_READ) ?
+			IO_URING_CMD_BUF_READ : 0) |
+	      ((arg.flags & IORING_MOCK_PROV_F_WRITE) ?
+			IO_URING_CMD_BUF_WRITE : 0);
+	if (!dir)
+		dir = IO_URING_CMD_BUF_READ | IO_URING_CMD_BUF_WRITE;
+
+	nr_pages = DIV_ROUND_UP_ULL(arg.len, PAGE_SIZE);
+
+	rb = kzalloc_obj(*rb, GFP_KERNEL);
+	if (!rb)
+		return -ENOMEM;
+	rb->pages = kmalloc_array(nr_pages, sizeof(*rb->pages), GFP_KERNEL);
+	bvecs = kmalloc_array(nr_pages, sizeof(*bvecs), GFP_KERNEL);
+	if (!rb->pages || !bvecs) {
+		ret = -ENOMEM;
+		goto err_arrays;
+	}
+
+	for (i = 0; i < nr_pages; i++) {
+		rb->pages[i] = alloc_page(GFP_KERNEL);
+		if (!rb->pages[i]) {
+			ret = -ENOMEM;
+			goto err_pages;
+		}
+	}
+
+	remaining = arg.len;
+	for (i = 0; i < nr_pages; i++) {
+		unsigned int chunk = min_t(u64, remaining, PAGE_SIZE);
+
+		if (arg.flags & IORING_MOCK_PROV_F_FILL_PATTERN) {
+			void *va = kmap_local_page(rb->pages[i]);
+
+			memset(va, arg.pattern, PAGE_SIZE);
+			kunmap_local(va);
+		}
+		bvec_set_page(&bvecs[i], rb->pages[i], chunk, 0);
+		remaining -= chunk;
+	}
+
+	rb->nr_pages = nr_pages;
+	rb->len = arg.len;
+	atomic_set(&rb->released, 0);
+	refcount_set(&rb->refs, 2);	/* one for io_uring, one for the file */
+
+	desc = (struct io_uring_cmd_buf_desc){
+		.bvecs		= bvecs,
+		.nr_bvecs	= nr_pages,
+		.len		= arg.len,
+		.dir		= dir,
+		.release	= io_mock_regbuf_release,
+		.release_data	= rb,
+	};
+	ret = io_uring_cmd_register_bvecs(cmd, arg.buf_index, &desc, issue_flags);
+	kfree(bvecs);
+	bvecs = NULL;
+	if (ret)
+		goto err_pages_all;
+
+	/* io_uring owns one reference now; the mock file keeps the other. */
+	io_mock_regbuf_put(mf->regbuf);
+	mf->regbuf = rb;
+	return 0;
+
+err_pages_all:
+	i = nr_pages;
+err_pages:
+	while (i--)
+		__free_page(rb->pages[i]);
+err_arrays:
+	kfree(bvecs);
+	kfree(rb->pages);
+	kfree(rb);
+	return ret;
+}
+
+/* Read back whether the last provider buffer was registered and released. */
+static int io_cmd_prov_stat(struct io_uring_cmd *cmd)
+{
+	const struct io_uring_sqe *sqe = cmd->sqe;
+	struct io_mock_file *mf = cmd->file->private_data;
+	struct io_uring_mock_prov_stat arg;
+	struct io_uring_mock_prov_stat __user *uarg;
+
+	if (sqe->ioprio || sqe->__pad1 || sqe->addr3 || sqe->file_index)
+		return -EINVAL;
+	uarg = u64_to_user_ptr(READ_ONCE(sqe->addr));
+	if (READ_ONCE(sqe->len) != sizeof(arg))
+		return -EINVAL;
+
+	memset(&arg, 0, sizeof(arg));
+	if (mf->regbuf) {
+		arg.registered = 1;
+		arg.released = atomic_read(&mf->regbuf->released);
+		arg.len = mf->regbuf->len;
+	}
+	if (copy_to_user(uarg, &arg, sizeof(arg)))
+		return -EFAULT;
+	return 0;
+}
+
 static int io_mock_cmd(struct io_uring_cmd *cmd, unsigned int issue_flags)
 {
 	switch (cmd->cmd_op) {
 	case IORING_MOCK_CMD_COPY_REGBUF:
 		return io_cmd_copy_regbuf(cmd, issue_flags);
+	case IORING_MOCK_CMD_PROV_REGISTER:
+		return io_cmd_prov_register(cmd, issue_flags);
+	case IORING_MOCK_CMD_PROV_STAT:
+		return io_cmd_prov_stat(cmd);
 	}
 	return -ENOTSUPP;
 }
@@ -181,6 +371,7 @@ static int io_mock_release(struct inode *inode, struct file *file)
 {
 	struct io_mock_file *mf = file->private_data;
 
+	io_mock_regbuf_put(mf->regbuf);
 	kfree(mf);
 	return 0;
 }
