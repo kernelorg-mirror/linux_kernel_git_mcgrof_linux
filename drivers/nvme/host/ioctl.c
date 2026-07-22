@@ -6,6 +6,8 @@
 #include <linux/blk-integrity.h>
 #include <linux/ptrace.h>	/* for force_successful_syscall_return */
 #include <linux/nvme_ioctl.h>
+#include <linux/blk-iobuf.h>
+#include <uapi/linux/blkdev.h>
 #include <linux/io_uring/cmd.h>
 #include "nvme.h"
 
@@ -645,11 +647,44 @@ static int nvme_uring_cmd_checks(unsigned int issue_flags)
 	return 0;
 }
 
+static int nvme_ns_alloc_iobuf(struct nvme_ns *ns, struct io_uring_cmd *ioucmd,
+			       unsigned int issue_flags)
+{
+	const struct io_uring_sqe *sqe = ioucmd->sqe;
+	struct blk_iobuf_pool *pool;
+	u64 buf_index, len;
+	int ret;
+
+	if (READ_ONCE(sqe->ioprio) || READ_ONCE(sqe->__pad1) ||
+	    READ_ONCE(sqe->len) || READ_ONCE(sqe->rw_flags) ||
+	    READ_ONCE(sqe->file_index))
+		return -EINVAL;
+	buf_index = READ_ONCE(sqe->addr);
+	len = READ_ONCE(sqe->addr3);
+
+	pool = blk_queue_get_iobuf_pool(ns->queue);
+	if (!pool)
+		return -EOPNOTSUPP;
+	ret = blk_uring_cmd_alloc_iobuf(ioucmd, pool, buf_index, len,
+				       issue_flags);
+	blk_iobuf_pool_put(pool);
+	return ret;
+}
+
 static int nvme_ns_uring_cmd(struct nvme_ns *ns, struct io_uring_cmd *ioucmd,
 			     unsigned int issue_flags)
 {
 	struct nvme_ctrl *ctrl = ns->ctrl;
 	int ret;
+
+	/*
+	 * The pool-backed fixed-buffer allocation rides in plain SQE fields,
+	 * so dispatch it before the SQE128 requirement -- it works the same on
+	 * /dev/ngXnY and /dev/nvmeXnY, and on the multipath head fd it runs
+	 * under head->srcu with ns->queue valid.
+	 */
+	if (ioucmd->cmd_op == BLOCK_URING_CMD_ALLOC_IOBUF)
+		return nvme_ns_alloc_iobuf(ns, ioucmd, issue_flags);
 
 	ret = nvme_uring_cmd_checks(issue_flags);
 	if (ret)
