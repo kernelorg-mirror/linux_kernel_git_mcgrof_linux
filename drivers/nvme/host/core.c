@@ -6,6 +6,7 @@
 
 #include <linux/async.h>
 #include <linux/blkdev.h>
+#include <linux/blk-iobuf.h>
 #include <linux/blk-mq.h>
 #include <linux/blk-integrity.h>
 #include <linux/compat.h>
@@ -55,6 +56,16 @@ EXPORT_SYMBOL_GPL(admin_timeout);
 
 unsigned int nvme_io_timeout = 30;
 module_param_named(io_timeout, nvme_io_timeout, uint, 0644);
+static unsigned int nvme_iobuf_pool_order;
+module_param_named(iobuf_pool_order, nvme_iobuf_pool_order, uint, 0444);
+MODULE_PARM_DESC(iobuf_pool_order,
+	"folio order for per-namespace iobuf pools (0 = disabled)");
+
+static unsigned int nvme_iobuf_pool_folios;
+module_param_named(iobuf_pool_folios, nvme_iobuf_pool_folios, uint, 0444);
+MODULE_PARM_DESC(iobuf_pool_folios,
+	"folios per per-namespace iobuf pool (0 = disabled)");
+
 MODULE_PARM_DESC(io_timeout, "timeout in seconds for I/O");
 EXPORT_SYMBOL_GPL(nvme_io_timeout);
 
@@ -4188,6 +4199,39 @@ static void nvme_ns_add_to_ctrl_list(struct nvme_ns *ns)
 	list_add_rcu(&ns->list, &ns->ctrl->namespaces);
 }
 
+static void nvme_iobuf_pool_provision(struct nvme_ns *ns)
+{
+	struct blk_iobuf_pool *pool;
+
+	if (!IS_ENABLED(CONFIG_BLK_IOBUF_POOL))
+		return;
+	if (!nvme_iobuf_pool_order && !nvme_iobuf_pool_folios)
+		return;			/* feature disabled */
+	if (!nvme_iobuf_pool_order || !nvme_iobuf_pool_folios) {
+		dev_warn(ns->ctrl->device,
+			 "iobuf_pool: set both order and folios; skipping %s\n",
+			 ns->disk->disk_name);
+		return;
+	}
+
+	pool = blk_iobuf_pool_create(nvme_iobuf_pool_order,
+				     nvme_iobuf_pool_folios);
+	if (IS_ERR(pool)) {
+		dev_warn(ns->ctrl->device,
+			 "iobuf_pool: creation failed for %s: %ld\n",
+			 ns->disk->disk_name, PTR_ERR(pool));
+		return;
+	}
+	blk_queue_set_iobuf_pool(ns->queue, pool);
+	blk_iobuf_pool_put(pool);	/* set() took its own reference */
+	dev_info(ns->ctrl->device,
+		 "iobuf_pool: %u folios of order %u (%u KiB total) on %s\n",
+		 nvme_iobuf_pool_folios, nvme_iobuf_pool_order,
+		 (nvme_iobuf_pool_folios << nvme_iobuf_pool_order) <<
+			 (PAGE_SHIFT - 10),
+		 ns->disk->disk_name);
+}
+
 static void nvme_alloc_ns(struct nvme_ctrl *ctrl, struct nvme_ns_info *info)
 {
 	struct queue_limits lim = { };
@@ -4245,6 +4289,8 @@ static void nvme_alloc_ns(struct nvme_ctrl *ctrl, struct nvme_ns_info *info)
 
 	if (nvme_update_ns_info(ns, info))
 		goto out_unlink_ns;
+
+	nvme_iobuf_pool_provision(ns);
 
 	mutex_lock(&ctrl->namespaces_lock);
 	/*
