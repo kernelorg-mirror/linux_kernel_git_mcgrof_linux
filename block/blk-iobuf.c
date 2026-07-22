@@ -20,7 +20,10 @@
  */
 #include <linux/blk-iobuf.h>
 #include <linux/blkdev.h>
+#include <linux/bvec.h>
 #include <linux/gfp.h>
+#include <linux/highmem.h>
+#include <linux/io_uring/cmd.h>
 #include <linux/kref.h>
 #include <linux/mempool.h>
 #include <linux/mm.h>
@@ -336,3 +339,105 @@ struct blk_iobuf_pool *blk_queue_get_iobuf_pool(struct request_queue *q)
 	return pool;
 }
 EXPORT_SYMBOL_GPL(blk_queue_get_iobuf_pool);
+
+/*
+ * Provider glue: allocate a logical fixed buffer from a queue's pool and
+ * install it into an io_uring sparse fixed-buffer slot.
+ */
+
+struct blk_iobuf_reg {
+	struct blk_iobuf_pool	*pool;
+	struct folio		**folios;
+	struct bio_vec		*bvecs;
+	unsigned int		nr_folios;
+};
+
+/* Runs once, when io_uring drops the registered buffer. */
+static void blk_iobuf_reg_release(void *data)
+{
+	struct blk_iobuf_reg *reg = data;
+
+	blk_iobuf_pool_free_batch(reg->pool, reg->folios, reg->nr_folios);
+	blk_iobuf_pool_put(reg->pool);
+	kfree(reg->folios);
+	kfree(reg->bvecs);
+	kfree(reg);
+}
+
+/**
+ * blk_uring_cmd_alloc_iobuf - install a pool-backed fixed buffer
+ * @cmd:         provider uring_cmd
+ * @pool:        the queue's iobuf pool (a referenced pointer the caller owns)
+ * @buf_index:   sparse fixed-buffer slot to fill
+ * @len:         logical buffer length
+ * @issue_flags: uring_cmd issue flags
+ *
+ * Checks out ceil(len / folio_size) folios strictly from @pool, zeroes them,
+ * builds one bvec per folio (the last truncated to the remainder), and
+ * registers them as a kernel-owned fixed buffer. On success the provider
+ * object owns a reference to @pool and is handed to the io_uring release
+ * callback; on failure every folio is returned and no reference is leaked.
+ */
+int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
+			      struct blk_iobuf_pool *pool,
+			      u64 buf_index, u64 len, unsigned int issue_flags)
+{
+	unsigned int folio_size = blk_iobuf_pool_folio_size(pool);
+	struct io_uring_cmd_buf_desc desc;
+	struct blk_iobuf_reg *reg;
+	unsigned int nr_folios, i;
+	size_t remaining;
+	int ret;
+
+	if (!len || len > MAX_RW_COUNT || buf_index > UINT_MAX)
+		return -EINVAL;
+	nr_folios = DIV_ROUND_UP(len, folio_size);
+
+	reg = kzalloc(sizeof(*reg), GFP_KERNEL);
+	if (!reg)
+		return -ENOMEM;
+	reg->folios = kmalloc_array(nr_folios, sizeof(*reg->folios), GFP_KERNEL);
+	reg->bvecs = kmalloc_array(nr_folios, sizeof(*reg->bvecs), GFP_KERNEL);
+	if (!reg->folios || !reg->bvecs) {
+		ret = -ENOMEM;
+		goto err;
+	}
+	reg->pool = blk_iobuf_pool_get(pool);
+	reg->nr_folios = nr_folios;
+
+	ret = blk_iobuf_pool_alloc_batch(pool, reg->folios, nr_folios);
+	if (ret)
+		goto err;
+
+	remaining = len;
+	for (i = 0; i < nr_folios; i++) {
+		unsigned int chunk = min_t(size_t, remaining, folio_size);
+
+		folio_zero_range(reg->folios[i], 0, folio_size);
+		bvec_set_folio(&reg->bvecs[i], reg->folios[i], chunk, 0);
+		remaining -= chunk;
+	}
+
+	desc = (struct io_uring_cmd_buf_desc){
+		.bvecs		= reg->bvecs,
+		.nr_bvecs	= nr_folios,
+		.len		= len,
+		.dir		= IO_URING_CMD_BUF_READ | IO_URING_CMD_BUF_WRITE,
+		.release	= blk_iobuf_reg_release,
+		.release_data	= reg,
+	};
+	ret = io_uring_cmd_register_bvecs(cmd, buf_index, &desc, issue_flags);
+	if (ret) {
+		blk_iobuf_pool_free_batch(pool, reg->folios, nr_folios);
+		goto err;
+	}
+	return 0;	/* io_uring owns reg via the release callback */
+
+err:
+	blk_iobuf_pool_put(reg->pool);	/* NULL-safe if never taken */
+	kfree(reg->folios);
+	kfree(reg->bvecs);
+	kfree(reg);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(blk_uring_cmd_alloc_iobuf);

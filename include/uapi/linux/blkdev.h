@@ -11,4 +11,20 @@
  */
 #define BLOCK_URING_CMD_DISCARD			_IO(0x12, 0)
 
+/*
+ * Allocate one logical fixed buffer from the provider queue's iobuf pool and
+ * install it into an existing sparse registered-buffer slot on the ring.
+ *
+ *   sqe->addr   = buf_index, the sparse fixed-buffer slot to fill
+ *   sqe->addr3  = len, the logical buffer length in bytes
+ *
+ * The provider's pool determines the folio order; the buffer is bidirectional,
+ * zeroed before it becomes visible, and allocated strictly from the pool (no
+ * fallback). Remove it with the ordinary registered-buffer update/unregister
+ * API. Errors: -EOPNOTSUPP (no pool attached), -ENOBUFS (pool exhausted),
+ * -EBUSY (slot occupied), -EINVAL (bad length or index), -ENXIO (no buffer
+ * table).
+ */
+#define BLOCK_URING_CMD_ALLOC_IOBUF		_IO(0x12, 1)
+
 #endif

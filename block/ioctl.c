@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/capability.h>
 #include <linux/compat.h>
+#include <linux/blk-iobuf.h>
 #include <linux/blkdev.h>
 #include <linux/export.h>
 #include <linux/gfp.h>
@@ -944,6 +945,21 @@ static int blkdev_cmd_discard(struct io_uring_cmd *cmd,
 	return -EIOCBQUEUED;
 }
 
+static int blkdev_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
+				  struct block_device *bdev, u64 buf_index,
+				  u64 len, unsigned int issue_flags)
+{
+	struct blk_iobuf_pool *pool;
+	int ret;
+
+	pool = blk_queue_get_iobuf_pool(bdev_get_queue(bdev));
+	if (!pool)
+		return -EOPNOTSUPP;
+	ret = blk_uring_cmd_alloc_iobuf(cmd, pool, buf_index, len, issue_flags);
+	blk_iobuf_pool_put(pool);
+	return ret;
+}
+
 int blkdev_uring_cmd(struct io_uring_cmd *cmd, unsigned int issue_flags)
 {
 	struct block_device *bdev = I_BDEV(cmd->file->f_mapping->host);
@@ -969,6 +985,9 @@ int blkdev_uring_cmd(struct io_uring_cmd *cmd, unsigned int issue_flags)
 	case BLOCK_URING_CMD_DISCARD:
 		return blkdev_cmd_discard(cmd, bdev, bic->start, bic->len,
 					  bic->nowait);
+	case BLOCK_URING_CMD_ALLOC_IOBUF:
+		return blkdev_cmd_alloc_iobuf(cmd, bdev, bic->start, bic->len,
+					      issue_flags);
 	}
 	return -EINVAL;
 }
