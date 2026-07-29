@@ -243,6 +243,13 @@ static inline unsigned get_max_io_size(struct bio *bio,
 		max_sectors = lim->max_write_zeroes_sectors;
 	else if (is_atomic)
 		max_sectors = lim->atomic_write_max_sectors;
+	else if (lim->max_premapped_sectors && bio_flagged(bio, BIO_PREMAPPED))
+		/*
+		 * A persistently DMA-mapped buffer allocates no IOVA per I/O, so
+		 * it is not bound by the dma_opt_mapping_size() clamp baked into
+		 * max_sectors; let it reach the device's real command ceiling.
+		 */
+		max_sectors = lim->max_premapped_sectors;
 	else
 		max_sectors = lim->max_sectors;
 

@@ -322,6 +322,9 @@ enum {
 	BIO_REMAPPED,
 	BIO_ZONE_WRITE_PLUGGING, /* bio handled through zone write plugging */
 	BIO_EMULATES_ZONE_APPEND, /* bio emulates a zone append operation */
+	BIO_PREMAPPED,		/* buffer is persistently DMA-mapped; the split
+				 * path may use max_premapped_sectors instead of
+				 * max_sectors */
 	BIO_FLAG_LAST
 };
 
