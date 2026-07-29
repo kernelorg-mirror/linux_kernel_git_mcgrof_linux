@@ -665,7 +665,14 @@ static int nvme_ns_alloc_iobuf(struct nvme_ns *ns, struct io_uring_cmd *ioucmd,
 	pool = blk_queue_get_iobuf_pool(ns->queue);
 	if (!pool)
 		return -EOPNOTSUPP;
-	ret = blk_uring_cmd_alloc_iobuf(ioucmd, pool, buf_index, len,
+	/*
+	 * dma_dev is NULL here: this buffer is dynamically mapped per I/O, the
+	 * existing behaviour.  A persistent-DMA (premapped) allocation that
+	 * passes ns->ctrl's DMA device is added with the NVMe premapped-PRP
+	 * consumer, so the retained mapping is only built once something reuses
+	 * it.
+	 */
+	ret = blk_uring_cmd_alloc_iobuf(ioucmd, pool, NULL, buf_index, len,
 				       issue_flags);
 	blk_iobuf_pool_put(pool);
 	return ret;

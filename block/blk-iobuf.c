@@ -21,6 +21,8 @@
 #include <linux/blk-iobuf.h>
 #include <linux/blkdev.h>
 #include <linux/bvec.h>
+#include <linux/device.h>
+#include <linux/dma-mapping.h>
 #include <linux/gfp.h>
 #include <linux/highmem.h>
 #include <linux/io_uring/cmd.h>
@@ -30,6 +32,7 @@
 #include <linux/mutex.h>
 #include <linux/overflow.h>
 #include <linux/rcupdate.h>
+#include <linux/scatterlist.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -345,18 +348,71 @@ EXPORT_SYMBOL_GPL(blk_queue_get_iobuf_pool);
  * install it into an io_uring sparse fixed-buffer slot.
  */
 
+/*
+ * @dma_dev/@sgt hold an optional persistent DMA mapping of the pool folios to
+ * one device, established once at registration and torn down at release.  This
+ * is the kernel analogue of SPDK's map-once model: while the buffer is
+ * registered its device DMA addresses are stable, so the NVMe request path can
+ * build PRP/SGL lists from them without allocating an IOVA per I/O -- the
+ * per-I/O IOVA allocation being what forces the 128 KiB command clamp on
+ * translating-IOMMU hosts.  @dma_dev is NULL for an ordinary (dynamically
+ * mapped) buffer, in which case @sgt is unused and behaviour is unchanged.
+ */
 struct blk_iobuf_reg {
 	struct blk_iobuf_pool	*pool;
 	struct folio		**folios;
 	struct bio_vec		*bvecs;
 	unsigned int		nr_folios;
+	struct device		*dma_dev;
+	struct sg_table		sgt;
 };
+
+/*
+ * Map the checked-out folios to @dma_dev once, retaining the mapping for the
+ * lifetime of the registration.  One scatterlist entry per folio (each folio
+ * is physically contiguous); DMA_BIDIRECTIONAL because a fixed buffer serves
+ * both reads and writes.  On success @reg->dma_dev is set and the caller must
+ * pair this with blk_iobuf_reg_dma_unmap().
+ */
+static int blk_iobuf_reg_dma_map(struct blk_iobuf_reg *reg,
+				 struct device *dma_dev)
+{
+	unsigned int folio_size = blk_iobuf_pool_folio_size(reg->pool);
+	struct scatterlist *sg;
+	unsigned int i;
+	int ret;
+
+	ret = sg_alloc_table(&reg->sgt, reg->nr_folios, GFP_KERNEL);
+	if (ret)
+		return ret;
+
+	for_each_sgtable_sg(&reg->sgt, sg, i)
+		sg_set_folio(sg, reg->folios[i], folio_size, 0);
+
+	ret = dma_map_sgtable(dma_dev, &reg->sgt, DMA_BIDIRECTIONAL, 0);
+	if (ret) {
+		sg_free_table(&reg->sgt);
+		return ret;
+	}
+	reg->dma_dev = dma_dev;
+	return 0;
+}
+
+static void blk_iobuf_reg_dma_unmap(struct blk_iobuf_reg *reg)
+{
+	if (!reg->dma_dev)
+		return;
+	dma_unmap_sgtable(reg->dma_dev, &reg->sgt, DMA_BIDIRECTIONAL, 0);
+	sg_free_table(&reg->sgt);
+	reg->dma_dev = NULL;
+}
 
 /* Runs once, when io_uring drops the registered buffer. */
 static void blk_iobuf_reg_release(void *data)
 {
 	struct blk_iobuf_reg *reg = data;
 
+	blk_iobuf_reg_dma_unmap(reg);
 	blk_iobuf_pool_free_batch(reg->pool, reg->folios, reg->nr_folios);
 	blk_iobuf_pool_put(reg->pool);
 	kfree(reg->folios);
@@ -368,6 +424,8 @@ static void blk_iobuf_reg_release(void *data)
  * blk_uring_cmd_alloc_iobuf - install a pool-backed fixed buffer
  * @cmd:         provider uring_cmd
  * @pool:        the queue's iobuf pool (a referenced pointer the caller owns)
+ * @dma_dev:     device to persistently DMA-map the buffer to, or NULL for an
+ *               ordinary dynamically mapped buffer (unchanged behaviour)
  * @buf_index:   sparse fixed-buffer slot to fill
  * @len:         logical buffer length
  * @issue_flags: uring_cmd issue flags
@@ -377,9 +435,15 @@ static void blk_iobuf_reg_release(void *data)
  * registers them as a kernel-owned fixed buffer. On success the provider
  * object owns a reference to @pool and is handed to the io_uring release
  * callback; on failure every folio is returned and no reference is leaked.
+ *
+ * When @dma_dev is non-NULL the folios are additionally DMA-mapped to that
+ * device once, and the mapping is retained until the buffer is released, so a
+ * device request path can reuse the persistent DMA addresses instead of
+ * mapping per I/O.
  */
 int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 			      struct blk_iobuf_pool *pool,
+			      struct device *dma_dev,
 			      u64 buf_index, u64 len, unsigned int issue_flags)
 {
 	unsigned int folio_size = blk_iobuf_pool_folio_size(pool);
@@ -418,6 +482,12 @@ int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 		remaining -= chunk;
 	}
 
+	if (dma_dev) {
+		ret = blk_iobuf_reg_dma_map(reg, dma_dev);
+		if (ret)
+			goto err_free_batch;
+	}
+
 	desc = (struct io_uring_cmd_buf_desc){
 		.bvecs		= reg->bvecs,
 		.nr_bvecs	= nr_folios,
@@ -428,11 +498,14 @@ int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 	};
 	ret = io_uring_cmd_register_bvecs(cmd, buf_index, &desc, issue_flags);
 	if (ret) {
+		blk_iobuf_reg_dma_unmap(reg);
 		blk_iobuf_pool_free_batch(pool, reg->folios, nr_folios);
 		goto err;
 	}
 	return 0;	/* io_uring owns reg via the release callback */
 
+err_free_batch:
+	blk_iobuf_pool_free_batch(pool, reg->folios, nr_folios);
 err:
 	blk_iobuf_pool_put(reg->pool);	/* NULL-safe if never taken */
 	kfree(reg->folios);

@@ -955,7 +955,9 @@ static int blkdev_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 	pool = blk_queue_get_iobuf_pool(bdev_get_queue(bdev));
 	if (!pool)
 		return -EOPNOTSUPP;
-	ret = blk_uring_cmd_alloc_iobuf(cmd, pool, buf_index, len, issue_flags);
+	/* dma_dev NULL: dynamically mapped, the existing behaviour. */
+	ret = blk_uring_cmd_alloc_iobuf(cmd, pool, NULL, buf_index, len,
+					issue_flags);
 	blk_iobuf_pool_put(pool);
 	return ret;
 }
