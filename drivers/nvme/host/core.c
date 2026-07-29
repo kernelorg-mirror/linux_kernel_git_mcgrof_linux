@@ -2077,6 +2077,13 @@ static void nvme_set_ctrl_limits(struct nvme_ctrl *ctrl,
 		struct queue_limits *lim, bool is_admin)
 {
 	lim->max_hw_sectors = ctrl->max_hw_sectors;
+	/*
+	 * Un-clamped MDTS for premapped (persistently DMA-mapped) I/O. Capped
+	 * to UINT_MAX>>9 when MDTS was absent (max_premapped_sectors left at
+	 * UINT_MAX); the block layer keeps it at or above max_sectors.
+	 */
+	lim->max_premapped_sectors =
+		min_t(u32, ctrl->max_premapped_sectors, UINT_MAX >> SECTOR_SHIFT);
 	lim->max_segments = min_t(u32, USHRT_MAX,
 		min_not_zero(nvme_max_drv_segments(ctrl), ctrl->max_segments));
 	lim->max_integrity_segments = ctrl->max_integrity_segments;
@@ -3663,6 +3670,13 @@ static int nvme_init_identify(struct nvme_ctrl *ctrl)
 		max_hw_sectors = nvme_mps_to_sectors(ctrl, id->mdts);
 	else
 		max_hw_sectors = UINT_MAX;
+	/*
+	 * The premapped ceiling follows MDTS but not the transport's
+	 * dma_opt_mapping_size() clamp, which max_hw_sectors folds in next:
+	 * premapped I/O allocates no IOVA per command, so it may reach the
+	 * device's real command size.
+	 */
+	ctrl->max_premapped_sectors = max_hw_sectors;
 	ctrl->max_hw_sectors =
 		min_not_zero(ctrl->max_hw_sectors, max_hw_sectors);
 
