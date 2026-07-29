@@ -300,6 +300,25 @@ int io_uring_cmd_import_fixed(u64 ubuf, unsigned long len, int rw,
 }
 EXPORT_SYMBOL_GPL(io_uring_cmd_import_fixed);
 
+void *io_uring_cmd_kbuf_priv(struct io_uring_cmd *ioucmd,
+			     unsigned int issue_flags)
+{
+	struct io_kiocb *req = cmd_to_io_kiocb(ioucmd);
+	struct io_rsrc_node *node;
+	struct io_mapped_ubuf *imu;
+
+	if (!(ioucmd->flags & IORING_URING_CMD_FIXED))
+		return NULL;
+	node = io_find_buf_node(req, issue_flags);
+	if (!node)
+		return NULL;
+	imu = node->buf;
+	if (!(imu->flags & IO_REGBUF_F_KBUF))
+		return NULL;
+	return imu->priv;
+}
+EXPORT_SYMBOL_GPL(io_uring_cmd_kbuf_priv);
+
 int io_uring_cmd_import_fixed_vec(struct io_uring_cmd *ioucmd,
 				  const struct iovec __user *uvec,
 				  size_t uvec_segs,

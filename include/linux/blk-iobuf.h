@@ -25,6 +25,7 @@ struct blk_iobuf_pool;
 struct request_queue;
 struct io_uring_cmd;
 struct device;
+struct sg_table;
 
 #ifdef CONFIG_BLK_IOBUF_POOL
 
@@ -51,6 +52,8 @@ int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 			      struct blk_iobuf_pool *pool,
 			      struct device *dma_dev,
 			      u64 buf_index, u64 len, unsigned int issue_flags);
+struct sg_table *blk_iobuf_fixed_buf_sgt(void *kbuf_priv,
+					 struct device *dma_dev);
 
 unsigned int blk_iobuf_pool_order(const struct blk_iobuf_pool *pool);
 unsigned int blk_iobuf_pool_folio_size(const struct blk_iobuf_pool *pool);

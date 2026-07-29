@@ -358,7 +358,10 @@ EXPORT_SYMBOL_GPL(blk_queue_get_iobuf_pool);
  * translating-IOMMU hosts.  @dma_dev is NULL for an ordinary (dynamically
  * mapped) buffer, in which case @sgt is unused and behaviour is unchanged.
  */
+#define BLK_IOBUF_REG_MAGIC	0x42494f42u	/* "BIOB" */
+
 struct blk_iobuf_reg {
+	unsigned int		magic;
 	struct blk_iobuf_pool	*pool;
 	struct folio		**folios;
 	struct bio_vec		*bvecs;
@@ -366,6 +369,25 @@ struct blk_iobuf_reg {
 	struct device		*dma_dev;
 	struct sg_table		sgt;
 };
+
+/*
+ * Recover the retained DMA mapping of a pool-backed fixed buffer from the
+ * opaque provider data io_uring hands back for a kernel buffer (see
+ * io_uring_cmd_kbuf_priv()).  Returns the sg_table only when @kbuf_priv is one
+ * of our registrations premapped to @dma_dev; NULL otherwise.  The magic guards
+ * against being handed some other provider's kernel buffer.
+ */
+struct sg_table *blk_iobuf_fixed_buf_sgt(void *kbuf_priv, struct device *dma_dev)
+{
+	struct blk_iobuf_reg *reg = kbuf_priv;
+
+	if (!reg || reg->magic != BLK_IOBUF_REG_MAGIC)
+		return NULL;
+	if (!reg->dma_dev || reg->dma_dev != dma_dev)
+		return NULL;
+	return &reg->sgt;
+}
+EXPORT_SYMBOL_GPL(blk_iobuf_fixed_buf_sgt);
 
 /*
  * Map the checked-out folios to @dma_dev once, retaining the mapping for the
@@ -466,6 +488,7 @@ int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 		ret = -ENOMEM;
 		goto err;
 	}
+	reg->magic = BLK_IOBUF_REG_MAGIC;
 	reg->pool = blk_iobuf_pool_get(pool);
 	reg->nr_folios = nr_folios;
 

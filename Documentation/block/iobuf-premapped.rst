@@ -59,36 +59,56 @@ The pieces in this series
    ``dma_opt_mapping_size()`` clamp and publishes it as
    ``max_premapped_sectors``.
 
+The plumbing that reaches the mapping
+=====================================
+
+``block, io_uring: plumbing to reach a premapped buffer's DMA mapping``
+adds the accessors the consumer needs, still without a consumer:
+``io_uring_cmd_kbuf_priv()`` resolves the command's fixed buffer to the
+provider's ``release_data`` (the ``blk_iobuf_reg``);
+``blk_iobuf_fixed_buf_sgt()`` turns that into the retained ``sg_table``
+when it is one of ours premapped to the device; and
+``request.premap_sgt`` carries it into the request. The whole chain is
+``req->buf_index -> imu->priv -> blk_iobuf_reg -> sg_table``.
+
 What remains: the NVMe premapped-PRP consumer
 =============================================
 
-The three patches above are the substrate; they change no I/O on their
-own, because nothing yet flags a bio ``BIO_PREMAPPED`` or reuses the
-retained mapping. The consumer that closes the loop, and the piece that
-must be validated on hardware, is in the NVMe request path:
+The patches above are the substrate and its plumbing; they change no I/O
+on their own, because nothing yet flags a bio ``BIO_PREMAPPED`` or reuses
+the retained mapping. The consumer that closes the loop is in the NVMe
+request path, and it is the piece that must be validated on hardware
+because several spots must all be correct together:
 
-* **Reach the persistent mapping.** A premapped fixed buffer is an
-  io_uring ``IO_REGBUF_F_KBUF`` registration whose ``release_data`` is the
-  ``blk_iobuf_reg``. When ``NVME_URING_CMD_IO`` runs against such a
-  buffer, the request path must be able to retrieve that registration's
-  ``sg_table`` of persistent DMA addresses. This needs a small io_uring
-  accessor from the fixed-buffer imu to the provider's retained mapping,
-  and the bio marked ``BIO_PREMAPPED``.
+* **Set up the request.** In ``nvme_map_user_request()``, after importing
+  the fixed buffer, call ``io_uring_cmd_kbuf_priv()`` +
+  ``blk_iobuf_fixed_buf_sgt(dma_dev)``; on a hit, set ``req->premap_sgt``
+  and flag the bio ``BIO_PREMAPPED`` (so it splits at
+  ``max_premapped_sectors``).
 
-* **Build PRPs from persistent addresses.** ``nvme_map_data()`` currently
-  drives ``blk_rq_dma_map_iter_start()`` to map the request's bvecs per
-  I/O. For a premapped request it must instead build the PRP or SGL list
-  directly from the retained ``sg_table`` DMA addresses, skipping the
-  per-I/O mapping entirely. This is the load-bearing change and the one
-  that removes the per-I/O IOVA allocation.
+* **Feed the DMA iterator from the mapping.** Add a premapped branch to
+  ``blk_rq_dma_map_iter_start()``/``_next()`` keyed on
+  ``req->premap_sgt`` and ``BIO_PREMAPPED``: emit ``blk_dma_iter``
+  segments from the retained ``sg_dma_address()``/``sg_dma_len()`` rather
+  than mapping. NVMe's PRP/SGL builders consume the iterator unchanged.
+  For the whole-buffer case the walk starts at the first sg entry; an
+  arbitrary buffer offset needs the byte-offset bookkeeping this first
+  version can defer.
 
-* **Scope it.** Start with the single-path ``/dev/ngXnY`` fd only. A
-  persistent mapping is controller-specific, so a multipath-head
-  registration must be rejected (or maintain one mapping per possible
-  controller and remap on failover). mmap of the buffer for CPU
-  consumption, and dma-buf export for GPU consumption, are separate
-  follow-ups; the opaque kernel buffer alone suffices for an
-  NVMe-to-another-io_uring-operation pipeline.
+* **Do not unmap what you did not map (critical).** A premapped request
+  must free no DMA at completion. ``nvme_pci_prp_save_mapping()`` must
+  save no ``dma_vec`` for it, the single-segment fast path
+  (``nvme_pci_setup_data_simple()``, which ``dma_map_page()``s directly)
+  must be bypassed, and ``nvme_unmap_data()`` must skip the unmap while
+  still freeing any PRP descriptor list. Getting any of these wrong frees
+  a live mapping -- corruption -- which is why this step is
+  boot-validated, not asserted.
+
+* **Scope it.** Single-path ``/dev/ngXnY`` only; a persistent mapping is
+  controller-specific, so reject a multipath-head registration (or keep
+  one mapping per controller and remap on failover). mmap for CPU
+  consumption and dma-buf export for GPU consumption are separate
+  follow-ups.
 
 Validation plan
 ===============

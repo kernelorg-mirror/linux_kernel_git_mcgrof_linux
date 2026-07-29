@@ -122,6 +122,16 @@ struct request {
 	struct bio *bio;
 	struct bio *biotail;
 
+#ifdef CONFIG_BLK_IOBUF_POOL
+	/*
+	 * When the data buffer is a persistently DMA-mapped pool buffer
+	 * (bio flagged BIO_PREMAPPED), this points at its retained sg_table so
+	 * the DMA iterator can reuse the mapping instead of allocating an IOVA
+	 * per I/O. NULL for ordinary requests.
+	 */
+	struct sg_table *premap_sgt;
+#endif
+
 	union {
 		struct list_head queuelist;
 		struct request *rq_next;
