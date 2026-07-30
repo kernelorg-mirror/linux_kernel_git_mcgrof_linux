@@ -699,7 +699,7 @@ static int nvme_uring_cmd_checks(unsigned int issue_flags)
 }
 
 static int nvme_ns_alloc_iobuf(struct nvme_ns *ns, struct io_uring_cmd *ioucmd,
-			       unsigned int issue_flags)
+			       unsigned int issue_flags, bool can_premap)
 {
 	const struct io_uring_sqe *sqe = ioucmd->sqe;
 	struct blk_iobuf_pool *pool;
@@ -717,19 +717,24 @@ static int nvme_ns_alloc_iobuf(struct nvme_ns *ns, struct io_uring_cmd *ioucmd,
 	if (!pool)
 		return -EOPNOTSUPP;
 	/*
-	 * Premap the buffer to the controller's DMA device (== the request
-	 * path's nvmeq->dev->dev), so a later NVME_URING_CMD_IO against this
-	 * fixed buffer can reuse the retained mapping and issue up to the
-	 * device MDTS rather than the dma_opt_mapping_size() clamp.
+	 * Premap the buffer to the controller's DMA device only for a fixed
+	 * per-controller path, so a later NVME_URING_CMD_IO can reuse the
+	 * retained mapping and reach the device MDTS rather than the
+	 * dma_opt_mapping_size() clamp. On the multipath head fd
+	 * nvme_find_path() may pick a different controller per command, and the
+	 * chosen controller can be removed while the buffer stays registered,
+	 * leaving the retained mapping's device dangling -- so premapping is
+	 * refused there and an ordinary dynamically mapped buffer is used.
 	 */
-	ret = blk_uring_cmd_alloc_iobuf(ioucmd, pool, ns->ctrl->dev, buf_index,
-				       len, issue_flags);
+	ret = blk_uring_cmd_alloc_iobuf(ioucmd, pool,
+				       can_premap ? ns->ctrl->dev : NULL,
+				       buf_index, len, issue_flags);
 	blk_iobuf_pool_put(pool);
 	return ret;
 }
 
 static int nvme_ns_uring_cmd(struct nvme_ns *ns, struct io_uring_cmd *ioucmd,
-			     unsigned int issue_flags)
+			     unsigned int issue_flags, bool can_premap)
 {
 	struct nvme_ctrl *ctrl = ns->ctrl;
 	int ret;
@@ -741,7 +746,7 @@ static int nvme_ns_uring_cmd(struct nvme_ns *ns, struct io_uring_cmd *ioucmd,
 	 * under head->srcu with ns->queue valid.
 	 */
 	if (ioucmd->cmd_op == BLOCK_URING_CMD_ALLOC_IOBUF)
-		return nvme_ns_alloc_iobuf(ns, ioucmd, issue_flags);
+		return nvme_ns_alloc_iobuf(ns, ioucmd, issue_flags, can_premap);
 
 	ret = nvme_uring_cmd_checks(issue_flags);
 	if (ret)
@@ -766,7 +771,7 @@ int nvme_ns_chr_uring_cmd(struct io_uring_cmd *ioucmd, unsigned int issue_flags)
 	struct nvme_ns *ns = container_of(file_inode(ioucmd->file)->i_cdev,
 			struct nvme_ns, cdev);
 
-	return nvme_ns_uring_cmd(ns, ioucmd, issue_flags);
+	return nvme_ns_uring_cmd(ns, ioucmd, issue_flags, true);
 }
 
 int nvme_ns_chr_uring_cmd_iopoll(struct io_uring_cmd *ioucmd,
@@ -866,7 +871,7 @@ int nvme_ns_head_chr_uring_cmd(struct io_uring_cmd *ioucmd,
 	int ret = -EINVAL;
 
 	if (ns)
-		ret = nvme_ns_uring_cmd(ns, ioucmd, issue_flags);
+		ret = nvme_ns_uring_cmd(ns, ioucmd, issue_flags, false);
 	srcu_read_unlock(&head->srcu, srcu_idx);
 	return ret;
 }
