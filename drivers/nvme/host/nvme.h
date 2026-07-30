@@ -375,6 +375,13 @@ struct nvme_ctrl {
 
 	u64 cap;
 	u32 max_hw_sectors;
+	/*
+	 * True MDTS ceiling, without the dma_opt_mapping_size() clamp that
+	 * bounds max_hw_sectors on a translating IOMMU. Published as the
+	 * queue's max_hw_premapped_sectors so persistently DMA-mapped I/O can
+	 * reach the device's real command size. 0 until identify runs.
+	 */
+	u32 max_hw_premapped_sectors;
 	u32 max_segments;
 	u32 max_integrity_segments;
 	u32 max_zeroes_sectors;

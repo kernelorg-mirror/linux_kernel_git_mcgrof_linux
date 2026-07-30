@@ -937,6 +937,18 @@ static void nvme_unmap_data(struct request *req)
 	struct device *dma_dev = nvmeq->dev->dev;
 	unsigned int attrs = 0;
 
+	/*
+	 * A premapped request reused a persistent DMA mapping owned by the
+	 * fixed buffer; it saved no dma_vec and set no single-segment mapping,
+	 * so there is nothing to unmap here.  Only the PRP descriptor list (if
+	 * the command needed one) is ours to free.
+	 */
+	if (blk_rq_premapped(req)) {
+		if (iod->nr_descriptors)
+			nvme_free_descriptors(req);
+		return;
+	}
+
 	if (iod->flags & IOD_SINGLE_SEGMENT) {
 		static_assert(offsetof(union nvme_data_ptr, prp1) ==
 				offsetof(union nvme_data_ptr, sgl.addr));
@@ -970,6 +982,13 @@ static bool nvme_pci_prp_save_mapping(struct request *req,
 				      struct blk_dma_iter *iter)
 {
 	struct nvme_iod *iod = blk_mq_rq_to_pdu(req);
+
+	/*
+	 * A premapped buffer is persistently mapped; the completion path must
+	 * not unmap it, so save no dma_vec for it.
+	 */
+	if (blk_rq_premapped(req))
+		return true;
 
 	if (dma_use_iova(&iod->dma_state) || !dma_need_unmap(dma_dev) ||
 	    (iod->flags & IOD_DATA_P2P))
@@ -1253,9 +1272,11 @@ static blk_status_t nvme_map_data(struct request *req)
 
 	/*
 	 * Try to skip the DMA iterator for single segment requests, as that
-	 * significantly improves performances for small I/O sizes.
+	 * significantly improves performances for small I/O sizes.  A premapped
+	 * request must go through the iterator so its retained mapping is reused
+	 * (and never dma_map_page()'d/unmapped), so skip this fast path for it.
 	 */
-	if (blk_rq_nr_phys_segments(req) == 1) {
+	if (blk_rq_nr_phys_segments(req) == 1 && !blk_rq_premapped(req)) {
 		ret = nvme_pci_setup_data_simple(req, use_sgl);
 		if (ret != BLK_STS_AGAIN)
 			return ret;
@@ -1280,8 +1301,10 @@ static blk_status_t nvme_map_data(struct request *req)
 	if (use_sgl == SGL_FORCED ||
 	    (use_sgl == SGL_SUPPORTED &&
 	     (sgl_threshold && nvme_pci_avg_seg_size(req) >= sgl_threshold)))
-		return nvme_pci_setup_data_sgl(req, &iter);
-	return nvme_pci_setup_data_prp(req, &iter);
+		ret = nvme_pci_setup_data_sgl(req, &iter);
+	else
+		ret = nvme_pci_setup_data_prp(req, &iter);
+	return ret;
 }
 
 static blk_status_t nvme_pci_setup_meta_iter(struct request *req)
@@ -3732,6 +3755,12 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 	dev->ctrl.max_hw_sectors = min_t(u32,
 			NVME_MAX_BYTES >> SECTOR_SHIFT,
 			dma_opt_mapping_size(&pdev->dev) >> 9);
+	/*
+	 * Premapped I/O skips the dma_opt clamp but is still bounded by
+	 * NVME_MAX_BYTES, which the PRP/SGL descriptor pool is dimensioned for.
+	 * MDTS is folded in at identify.
+	 */
+	dev->ctrl.max_hw_premapped_sectors = NVME_MAX_BYTES >> SECTOR_SHIFT;
 	dev->ctrl.max_segments = NVME_MAX_SEGS;
 	dev->ctrl.max_integrity_segments = 1;
 	return dev;

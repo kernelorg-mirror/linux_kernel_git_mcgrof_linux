@@ -123,9 +123,37 @@ static struct request *nvme_alloc_user_request(struct request_queue *q,
 	return req;
 }
 
+static void nvme_setup_premapped(struct request *req, struct nvme_ns *ns,
+				 struct io_uring_cmd *ioucmd,
+				 unsigned int issue_flags)
+{
+#ifdef CONFIG_BLK_IOBUF_POOL
+	struct blk_dma_premap *premap;
+	void *kbuf_priv;
+
+	if (!ioucmd)
+		return;
+	kbuf_priv = io_uring_cmd_kbuf_priv(ioucmd, issue_flags);
+	if (!kbuf_priv)
+		return;
+	premap = blk_iobuf_fixed_buf_premap(kbuf_priv, ns->ctrl->dev);
+	if (!premap)
+		return;
+	/*
+	 * The buffer is persistently mapped to our DMA device. Record the
+	 * retained mapping BEFORE the buffer is mapped into the request, so
+	 * blk_rq_map_user_bvec sizes the gate on max_hw_premapped_sectors rather
+	 * than the 128K dma_opt clamp; req->dma_premap on the request is the sole
+	 * marker of a premapped request from here on.
+	 */
+	req->dma_premap = premap;
+#endif
+}
+
 static int nvme_map_user_request(struct request *req, u64 ubuffer,
 		unsigned bufflen, void __user *meta_buffer, unsigned meta_len,
-		struct iov_iter *iter, unsigned int flags)
+		struct iov_iter *iter, struct io_uring_cmd *ioucmd,
+		unsigned int issue_flags, unsigned int flags)
 {
 	struct request_queue *q = req->q;
 	struct nvme_ns *ns = q->queuedata;
@@ -137,14 +165,36 @@ static int nvme_map_user_request(struct request *req, u64 ubuffer,
 	if (has_metadata && !supports_metadata)
 		return -EINVAL;
 
-	if (iter)
-		ret = blk_rq_map_user_iov(q, req, NULL, iter, GFP_KERNEL);
-	else
+	/*
+	 * Detect a premapped fixed buffer BEFORE mapping it: the map path
+	 * gates the buffer size on max_hw_sectors and would reject a >128K
+	 * premapped buffer outright. Recording req->dma_premap first lets that
+	 * gate use max_hw_premapped_sectors instead.
+	 */
+	if (ns)
+		nvme_setup_premapped(req, ns, ioucmd, issue_flags);
+
+	if (iter) {
+		struct blk_rq_map_user_opts opts = {};
+
+		if (blk_rq_premapped(req)) {
+			/* retained mapping: reach the premapped ceiling, never copy */
+			opts.max_bytes = q->limits.max_hw_premapped_sectors << SECTOR_SHIFT;
+			opts.flags = BLK_RQ_MAP_NO_COPY;
+		}
+		ret = blk_rq_map_user_iov_opts(q, req, NULL, iter, GFP_KERNEL,
+					       &opts);
+	} else {
 		ret = blk_rq_map_user_io(req, NULL, nvme_to_user_ptr(ubuffer),
 				bufflen, GFP_KERNEL, flags & NVME_IOCTL_VEC, 0,
 				0, rq_data_dir(req));
-	if (ret)
+	}
+	if (ret) {
+#ifdef CONFIG_BLK_IOBUF_POOL
+		req->dma_premap = NULL;
+#endif
 		return ret;
+	}
 
 	if (has_metadata) {
 		ret = blk_rq_integrity_map_user(req, meta_buffer, meta_len);
@@ -179,7 +229,7 @@ static int nvme_submit_user_cmd(struct request_queue *q,
 	req->timeout = timeout;
 	if (ubuffer && bufflen) {
 		ret = nvme_map_user_request(req, ubuffer, bufflen, meta_buffer,
-				meta_len, NULL, flags);
+				meta_len, NULL, NULL, 0, flags);
 		if (ret)
 			goto out_free_req;
 	}
@@ -521,7 +571,8 @@ static int nvme_uring_cmd_io(struct nvme_ctrl *ctrl, struct nvme_ns *ns,
 	if (d.data_len) {
 		ret = nvme_map_user_request(req, d.addr, d.data_len,
 			nvme_to_user_ptr(d.metadata), d.metadata_len,
-			map_iter, vec ? NVME_IOCTL_VEC : 0);
+			map_iter, ioucmd, issue_flags,
+			vec ? NVME_IOCTL_VEC : 0);
 		if (ret)
 			goto out_free_req;
 	}
@@ -666,14 +717,13 @@ static int nvme_ns_alloc_iobuf(struct nvme_ns *ns, struct io_uring_cmd *ioucmd,
 	if (!pool)
 		return -EOPNOTSUPP;
 	/*
-	 * dma_dev is NULL here: this buffer is dynamically mapped per I/O, the
-	 * existing behaviour.  A persistent-DMA (premapped) allocation that
-	 * passes ns->ctrl's DMA device is added with the NVMe premapped-PRP
-	 * consumer, so the retained mapping is only built once something reuses
-	 * it.
+	 * Premap the buffer to the controller's DMA device (== the request
+	 * path's nvmeq->dev->dev), so a later NVME_URING_CMD_IO against this
+	 * fixed buffer can reuse the retained mapping and issue up to the
+	 * device MDTS rather than the dma_opt_mapping_size() clamp.
 	 */
-	ret = blk_uring_cmd_alloc_iobuf(ioucmd, pool, NULL, buf_index, len,
-				       issue_flags);
+	ret = blk_uring_cmd_alloc_iobuf(ioucmd, pool, ns->ctrl->dev, buf_index,
+				       len, issue_flags);
 	blk_iobuf_pool_put(pool);
 	return ret;
 }
