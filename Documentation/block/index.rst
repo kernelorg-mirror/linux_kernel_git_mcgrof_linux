@@ -14,6 +14,7 @@ Block
    data-integrity
    deadline-iosched
    inline-encryption
+   iobuf-premapped
    ioprio
    kyber-iosched
    null_blk
