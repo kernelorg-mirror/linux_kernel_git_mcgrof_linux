@@ -51,6 +51,9 @@ int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 			      struct blk_iobuf_pool *pool,
 			      struct device *dma_dev,
 			      u64 buf_index, u64 len, unsigned int issue_flags);
+struct blk_dma_premap;
+struct blk_dma_premap *blk_iobuf_fixed_buf_premap(void *kbuf_priv,
+						  struct device *dma_dev);
 
 unsigned int blk_iobuf_pool_order(const struct blk_iobuf_pool *pool);
 unsigned int blk_iobuf_pool_folio_size(const struct blk_iobuf_pool *pool);

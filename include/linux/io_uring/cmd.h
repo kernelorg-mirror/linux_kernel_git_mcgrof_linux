@@ -46,6 +46,15 @@ int io_uring_cmd_import_fixed(u64 ubuf, unsigned long len, int rw,
 			      struct iov_iter *iter,
 			      struct io_uring_cmd *ioucmd,
 			      unsigned int issue_flags);
+/*
+ * For a command targeting a kernel-owned (provider-registered) fixed buffer,
+ * return the provider's opaque release_data (the object it handed to
+ * io_uring_cmd_register_bvecs()); NULL for a user buffer or no fixed buffer.
+ * Lets a provider-aware consumer reclaim its own per-buffer state, e.g. a
+ * retained DMA mapping, from the buffer the command already resolved.
+ */
+void *io_uring_cmd_kbuf_priv(struct io_uring_cmd *ioucmd,
+			     unsigned int issue_flags);
 int io_uring_cmd_import_fixed_vec(struct io_uring_cmd *ioucmd,
 				  const struct iovec __user *uvec,
 				  size_t uvec_segs,

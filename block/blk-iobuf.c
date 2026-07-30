@@ -20,9 +20,12 @@
  */
 #include <linux/blk-iobuf.h>
 #include <linux/blkdev.h>
+#include <linux/blk-mq.h>
+#include <linux/blk-mq-dma.h>
 #include <linux/bvec.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
+#include <linux/dma-map-ops.h>
 #include <linux/gfp.h>
 #include <linux/highmem.h>
 #include <linux/io_uring/cmd.h>
@@ -32,7 +35,6 @@
 #include <linux/mutex.h>
 #include <linux/overflow.h>
 #include <linux/rcupdate.h>
-#include <linux/scatterlist.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
@@ -349,61 +351,114 @@ EXPORT_SYMBOL_GPL(blk_queue_get_iobuf_pool);
  */
 
 /*
- * @dma_dev/@sgt hold an optional persistent DMA mapping of the pool folios to
- * one device, established once at registration and torn down at release.  This
- * is the kernel analogue of SPDK's map-once model: while the buffer is
+ * @dma_dev/@premap hold an optional persistent DMA mapping of the pool folios
+ * to one device, established once at registration and torn down at release.
+ * This is the kernel analogue of SPDK's map-once model: while the buffer is
  * registered its device DMA addresses are stable, so the NVMe request path can
  * build PRP/SGL lists from them without allocating an IOVA per I/O -- the
  * per-I/O IOVA allocation being what forces the 128 KiB command clamp on
  * translating-IOMMU hosts.  @dma_dev is NULL for an ordinary (dynamically
- * mapped) buffer, in which case @sgt is unused and behaviour is unchanged.
+ * mapped) buffer, in which case @premap is unused and behaviour is unchanged.
  */
+#define BLK_IOBUF_REG_MAGIC	0x42494f42u	/* "BIOB" */
+
 struct blk_iobuf_reg {
+	unsigned int		magic;
 	struct blk_iobuf_pool	*pool;
 	struct folio		**folios;
 	struct bio_vec		*bvecs;
 	unsigned int		nr_folios;
 	struct device		*dma_dev;
-	struct sg_table		sgt;
+	struct blk_dma_premap	premap;
 };
 
 /*
+ * Recover the retained DMA mapping of a pool-backed fixed buffer from the
+ * opaque provider data io_uring hands back for a kernel buffer (see
+ * io_uring_cmd_kbuf_priv()).  Returns the retained mapping only when @kbuf_priv
+ * is one of our registrations premapped to @dma_dev; NULL otherwise.  The magic
+ * guards against being handed some other provider's kernel buffer.
+ */
+struct blk_dma_premap *blk_iobuf_fixed_buf_premap(void *kbuf_priv,
+						  struct device *dma_dev)
+{
+	struct blk_iobuf_reg *reg = kbuf_priv;
+
+	if (!reg || reg->magic != BLK_IOBUF_REG_MAGIC)
+		return NULL;
+	if (!reg->dma_dev || reg->dma_dev != dma_dev)
+		return NULL;
+	return &reg->premap;
+}
+EXPORT_SYMBOL_GPL(blk_iobuf_fixed_buf_premap);
+
+/*
  * Map the checked-out folios to @dma_dev once, retaining the mapping for the
- * lifetime of the registration.  One scatterlist entry per folio (each folio
- * is physically contiguous); DMA_BIDIRECTIONAL because a fixed buffer serves
- * both reads and writes.  On success @reg->dma_dev is set and the caller must
- * pair this with blk_iobuf_reg_dma_unmap().
+ * lifetime of the registration.  The whole buffer is reserved as one contiguous
+ * IOVA and each folio (physically contiguous) is linked into it;
+ * DMA_BIDIRECTIONAL because a fixed buffer serves both reads and writes.  On
+ * success @reg->dma_dev is set and the caller must pair this with
+ * blk_iobuf_reg_dma_unmap().
  */
 static int blk_iobuf_reg_dma_map(struct blk_iobuf_reg *reg,
 				 struct device *dma_dev)
 {
 	unsigned int folio_size = blk_iobuf_pool_folio_size(reg->pool);
-	struct scatterlist *sg;
+	size_t total = (size_t)reg->nr_folios * folio_size;
+	size_t mapped = 0;
 	unsigned int i;
 	int ret;
 
-	ret = sg_alloc_table(&reg->sgt, reg->nr_folios, GFP_KERNEL);
-	if (ret)
-		return ret;
+	/*
+	 * A premapped buffer is mapped once and reused for every command with no
+	 * per-command DMA cache maintenance, which is correct only where the
+	 * device does cache-coherent DMA.  On a non-coherent device fall back to
+	 * an ordinary dynamically mapped buffer: it pays the dma_opt clamp but
+	 * stays correct, and premapping there would owe per-I/O cache maintenance
+	 * that defeats its purpose anyway.
+	 */
+	if (!dev_is_dma_coherent(dma_dev))
+		return -EOPNOTSUPP;
 
-	for_each_sgtable_sg(&reg->sgt, sg, i)
-		sg_set_folio(sg, reg->folios[i], folio_size, 0);
+	/*
+	 * Reserve one contiguous IOVA for the whole buffer and link each folio
+	 * into it -- the two-step dma_iova_*() API the nvme request path uses.
+	 * dma_iova_try_alloc() fails when the device is not behind a translating
+	 * IOMMU; the caller then registers an ordinary dynamically mapped buffer
+	 * (which pays no dma_opt clamp there anyway).
+	 */
+	if (!dma_iova_try_alloc(dma_dev, &reg->premap.state,
+			(phys_addr_t)folio_pfn(reg->folios[0]) << PAGE_SHIFT,
+			total))
+		return -EOPNOTSUPP;
 
-	ret = dma_map_sgtable(dma_dev, &reg->sgt, DMA_BIDIRECTIONAL, 0);
-	if (ret) {
-		sg_free_table(&reg->sgt);
-		return ret;
+	for (i = 0; i < reg->nr_folios; i++) {
+		ret = dma_iova_link(dma_dev, &reg->premap.state,
+				(phys_addr_t)folio_pfn(reg->folios[i]) << PAGE_SHIFT,
+				mapped, folio_size, DMA_BIDIRECTIONAL, 0);
+		if (ret)
+			goto destroy;
+		mapped += folio_size;
 	}
+	ret = dma_iova_sync(dma_dev, &reg->premap.state, 0, mapped);
+	if (ret)
+		goto destroy;
+
+	reg->premap.dma_dev = dma_dev;
+	reg->premap.len = total;
 	reg->dma_dev = dma_dev;
 	return 0;
+destroy:
+	dma_iova_destroy(dma_dev, &reg->premap.state, mapped, DMA_BIDIRECTIONAL, 0);
+	return ret;
 }
 
 static void blk_iobuf_reg_dma_unmap(struct blk_iobuf_reg *reg)
 {
 	if (!reg->dma_dev)
 		return;
-	dma_unmap_sgtable(reg->dma_dev, &reg->sgt, DMA_BIDIRECTIONAL, 0);
-	sg_free_table(&reg->sgt);
+	dma_iova_destroy(reg->dma_dev, &reg->premap.state, reg->premap.len,
+			 DMA_BIDIRECTIONAL, 0);
 	reg->dma_dev = NULL;
 }
 
@@ -466,6 +521,7 @@ int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 		ret = -ENOMEM;
 		goto err;
 	}
+	reg->magic = BLK_IOBUF_REG_MAGIC;
 	reg->pool = blk_iobuf_pool_get(pool);
 	reg->nr_folios = nr_folios;
 
@@ -484,7 +540,8 @@ int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 
 	if (dma_dev) {
 		ret = blk_iobuf_reg_dma_map(reg, dma_dev);
-		if (ret)
+		/* No translating IOMMU: no IOVA to premap, no clamp to beat. */
+		if (ret && ret != -EOPNOTSUPP)
 			goto err_free_batch;
 	}
 

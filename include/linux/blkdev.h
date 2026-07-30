@@ -391,6 +391,15 @@ struct queue_limits {
 	unsigned int		chunk_sectors;
 	unsigned int		max_sectors;
 	unsigned int		max_user_sectors;
+	/*
+	 * Command-size ceiling for I/O whose buffer is persistently DMA-mapped
+	 * (premapped requests). Such I/O does not allocate an IOVA per command, so
+	 * it is not subject to the dma_opt_mapping_size() ceiling that clamps
+	 * max_hw_sectors on a translating IOMMU; a driver may set this to the
+	 * device's true maximum (e.g. NVMe MDTS). 0 means no premapped path:
+	 * premapped I/O then follows max_sectors like any other.
+	 */
+	unsigned int		max_hw_premapped_sectors;
 	unsigned int		max_segment_size;
 	unsigned int		max_fast_segment_size;
 	unsigned int		physical_block_size;

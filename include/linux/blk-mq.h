@@ -102,6 +102,10 @@ enum mq_rq_state {
  * If you modify this structure, make sure to update blk_rq_init() and
  * especially blk_mq_rq_ctx_init() to take care of the added fields.
  */
+
+/* A premapped request's retained buffer; defined in <linux/blk-mq-dma.h>. */
+struct blk_dma_premap;
+
 struct request {
 	struct request_queue *q;
 	struct blk_mq_ctx *mq_ctx;
@@ -121,6 +125,16 @@ struct request {
 
 	struct bio *bio;
 	struct bio *biotail;
+
+#ifdef CONFIG_BLK_IOBUF_POOL
+	/*
+	 * For a premapped request, the retained mapping of its persistently
+	 * DMA-mapped pool buffer. The DMA iterator reuses it instead of
+	 * allocating an IOVA per I/O; completion syncs and skips unmap through
+	 * it. NULL for ordinary requests.
+	 */
+	struct blk_dma_premap *dma_premap;
+#endif
 
 	union {
 		struct list_head queuelist;
@@ -1070,8 +1084,17 @@ int blk_rq_map_user(struct request_queue *, struct request *,
 		struct rq_map_data *, void __user *, unsigned long, gfp_t);
 int blk_rq_map_user_io(struct request *, struct rq_map_data *,
 		void __user *, unsigned long, gfp_t, bool, int, bool, int);
+struct blk_rq_map_user_opts {
+	unsigned int max_bytes;	/* override the size cap; 0 = max_hw_sectors */
+	unsigned int flags;
+};
+#define BLK_RQ_MAP_NO_COPY	(1u << 0)	/* fail rather than bounce-copy */
+
 int blk_rq_map_user_iov(struct request_queue *, struct request *,
 		struct rq_map_data *, const struct iov_iter *, gfp_t);
+int blk_rq_map_user_iov_opts(struct request_queue *, struct request *,
+		struct rq_map_data *, const struct iov_iter *, gfp_t,
+		const struct blk_rq_map_user_opts *);
 int blk_rq_unmap_user(struct bio *);
 int blk_rq_map_kern(struct request *rq, void *kbuf, unsigned int len,
 		gfp_t gfp);
@@ -1113,6 +1136,20 @@ struct req_iterator {
 static inline sector_t blk_rq_pos(const struct request *rq)
 {
 	return rq->__sector;
+}
+
+/*
+ * True when the request's data buffer is persistently DMA-mapped (a premapped
+ * pool buffer). Such a request builds its PRP/SGL from the retained mapping and
+ * must not be DMA-unmapped at completion.
+ */
+static inline bool blk_rq_premapped(const struct request *rq)
+{
+#ifdef CONFIG_BLK_IOBUF_POOL
+	return rq->dma_premap;
+#else
+	return false;
+#endif
 }
 
 static inline unsigned int blk_rq_bytes(const struct request *rq)

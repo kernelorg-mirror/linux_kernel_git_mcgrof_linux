@@ -423,12 +423,17 @@ cleanup:
  * Append a bio to a passthrough request.  Only works if the bio can be merged
  * into the request based on the driver constraints.
  */
-int blk_rq_append_bio(struct request *rq, struct bio *bio)
+static int __blk_rq_append_bio(struct request *rq, struct bio *bio,
+			       unsigned int max_bytes)
 {
 	const struct queue_limits *lim = &rq->q->limits;
-	unsigned int max_bytes = lim->max_hw_sectors << SECTOR_SHIFT;
 	unsigned int nr_segs = 0;
 	int ret;
+
+	/* 0 = ordinary per-I/O ceiling; a premapped mapping passes its own
+	 * larger max_bytes since it allocates no IOVA per command. */
+	if (!max_bytes)
+		max_bytes = lim->max_hw_sectors << SECTOR_SHIFT;
 
 	/* check that the data layout matches the hardware restrictions */
 	ret = bio_split_io_at(bio, lim, &nr_segs, max_bytes, 0);
@@ -457,14 +462,23 @@ int blk_rq_append_bio(struct request *rq, struct bio *bio)
 	rq->phys_gap_bit = bio->bi_bvec_gap_bit;
 	return 0;
 }
+
+int blk_rq_append_bio(struct request *rq, struct bio *bio)
+{
+	return __blk_rq_append_bio(rq, bio, 0);
+}
 EXPORT_SYMBOL(blk_rq_append_bio);
 
 /* Prepare bio for passthrough IO given ITER_BVEC iter */
-static int blk_rq_map_user_bvec(struct request *rq, const struct iov_iter *iter)
+static int blk_rq_map_user_bvec(struct request *rq, const struct iov_iter *iter,
+				unsigned int max_bytes)
 {
-	unsigned int max_bytes = rq->q->limits.max_hw_sectors << SECTOR_SHIFT;
 	struct bio *bio;
 	int ret;
+
+	/* 0 = ordinary per-I/O ceiling. */
+	if (!max_bytes)
+		max_bytes = rq->q->limits.max_hw_sectors << SECTOR_SHIFT;
 
 	if (!iov_iter_count(iter) || iov_iter_count(iter) > max_bytes)
 		return -EINVAL;
@@ -475,7 +489,7 @@ static int blk_rq_map_user_bvec(struct request *rq, const struct iov_iter *iter)
 		return -ENOMEM;
 	bio_iov_bvec_set(bio, iter);
 
-	ret = blk_rq_append_bio(rq, bio);
+	ret = __blk_rq_append_bio(rq, bio, max_bytes);
 	if (ret)
 		blk_mq_map_bio_put(bio);
 	return ret;
@@ -496,9 +510,10 @@ static int blk_rq_map_user_bvec(struct request *rq, const struct iov_iter *iter)
  *    A matching blk_rq_unmap_user() must be issued at the end of I/O, while
  *    still in process context.
  */
-int blk_rq_map_user_iov(struct request_queue *q, struct request *rq,
+int blk_rq_map_user_iov_opts(struct request_queue *q, struct request *rq,
 			struct rq_map_data *map_data,
-			const struct iov_iter *iter, gfp_t gfp_mask)
+			const struct iov_iter *iter, gfp_t gfp_mask,
+			const struct blk_rq_map_user_opts *opts)
 {
 	bool copy = false, map_bvec = false;
 	unsigned long align = blk_lim_dma_alignment_and_pad(&q->limits);
@@ -518,10 +533,16 @@ int blk_rq_map_user_iov(struct request_queue *q, struct request *rq,
 		copy = queue_virt_boundary(q) & iov_iter_gap_alignment(iter);
 
 	if (map_bvec) {
-		ret = blk_rq_map_user_bvec(rq, iter);
+		ret = blk_rq_map_user_bvec(rq, iter, opts->max_bytes);
 		if (!ret)
 			return 0;
 		if (ret != -EREMOTEIO)
+			goto fail;
+		/*
+		 * NO_COPY callers (a premapped request that must consume its
+		 * retained DMA mapping) cannot silently become a bounce buffer.
+		 */
+		if (opts->flags & BLK_RQ_MAP_NO_COPY)
 			goto fail;
 		/* fall back to copying the data on limits mismatches */
 		copy = true;
@@ -549,6 +570,16 @@ unmap_rq:
 fail:
 	rq->bio = NULL;
 	return ret;
+}
+EXPORT_SYMBOL(blk_rq_map_user_iov_opts);
+
+int blk_rq_map_user_iov(struct request_queue *q, struct request *rq,
+			struct rq_map_data *map_data,
+			const struct iov_iter *iter, gfp_t gfp_mask)
+{
+	const struct blk_rq_map_user_opts opts = {};
+
+	return blk_rq_map_user_iov_opts(q, rq, map_data, iter, gfp_mask, &opts);
 }
 EXPORT_SYMBOL(blk_rq_map_user_iov);
 

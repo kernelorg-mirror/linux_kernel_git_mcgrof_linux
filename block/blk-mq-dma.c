@@ -223,9 +223,57 @@ static bool blk_dma_map_iter_start(struct request *req, struct device *dma_dev,
  * need to be mapped after this, or go straight to blk_rq_dma_map_iter_next()
  * to try to map the following segments.
  */
+#ifdef CONFIG_BLK_IOBUF_POOL
+/*
+ * Premapped path: the buffer is persistently DMA-mapped as one contiguous IOVA
+ * (dma_iova_*), so hand the whole mapping to the iterator as a single segment
+ * instead of allocating an IOVA per I/O.  This is what lets a premapped request
+ * exceed the dma_opt_mapping_size() clamp folded into max_hw_sectors.  The
+ * completion path must NOT unmap it (see nvme_unmap_data).
+ *
+ * NOTE: this emits the mapping from its start, i.e. it assumes the request
+ * covers the buffer from offset 0.  The whole-buffer fixed-buffer command path
+ * used by the pool selftest satisfies that; an arbitrary buffer offset needs
+ * byte-offset bookkeeping a later revision can add.
+ */
+static bool blk_dma_premapped_next(struct blk_dma_iter *iter)
+{
+	/* The whole buffer is one contiguous IOVA, emitted by _start. */
+	return false;
+}
+
+static bool blk_dma_premapped_start(struct request *req,
+				    struct blk_dma_iter *iter,
+				    struct dma_iova_state *state)
+{
+	memset(&iter->p2pdma, 0, sizeof(iter->p2pdma));
+	iter->p2pdma.map = PCI_P2PDMA_MAP_NONE;
+	iter->status = BLK_STS_OK;
+	memset(state, 0, sizeof(*state));		/* not the IOVA path */
+	iter->addr = req->dma_premap->state.addr;
+	iter->len = blk_rq_payload_bytes(req);
+	return true;
+}
+
+static inline bool blk_rq_is_premapped(struct request *req)
+{
+	return req->dma_premap;
+}
+#else
+static inline bool blk_rq_is_premapped(struct request *req) { return false; }
+static inline bool blk_dma_premapped_start(struct request *req,
+		struct blk_dma_iter *iter, struct dma_iova_state *state)
+{ return false; }
+static inline bool blk_dma_premapped_next(struct blk_dma_iter *iter)
+{ return false; }
+#endif /* CONFIG_BLK_IOBUF_POOL */
+
 bool blk_rq_dma_map_iter_start(struct request *req, struct device *dma_dev,
 		struct dma_iova_state *state, struct blk_dma_iter *iter)
 {
+	if (blk_rq_is_premapped(req))
+		return blk_dma_premapped_start(req, iter, state);
+
 	blk_rq_map_iter_init(req, &iter->iter);
 	return blk_dma_map_iter_start(req, dma_dev, state, iter,
 				      blk_rq_payload_bytes(req));
@@ -253,6 +301,9 @@ bool blk_rq_dma_map_iter_next(struct request *req, struct device *dma_dev,
 		struct blk_dma_iter *iter)
 {
 	struct phys_vec vec;
+
+	if (blk_rq_is_premapped(req))
+		return blk_dma_premapped_next(iter);
 
 	if (!blk_map_iter_next(req, &iter->iter, &vec))
 		return false;

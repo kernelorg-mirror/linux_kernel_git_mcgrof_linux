@@ -4,6 +4,21 @@
 
 #include <linux/blk-mq.h>
 #include <linux/pci-p2pdma.h>
+#include <linux/dma-mapping.h>
+
+/*
+ * A premapped request's retained buffer: one persistent, contiguous IOVA
+ * mapping of the whole pool buffer (dma_iova_*), self-describing so the DMA
+ * iterator needs no external context.  Its lifetime is the io_uring
+ * registration's; the resource node keeps it alive across any in-flight
+ * command that borrows it.  Only established for cache-coherent devices, so a
+ * command reuses the mapping without per-command DMA cache maintenance.
+ */
+struct blk_dma_premap {
+	struct dma_iova_state	state;
+	struct device		*dma_dev;
+	size_t			len;
+};
 
 struct blk_map_iter {
 	struct bvec_iter		iter;
@@ -23,6 +38,7 @@ struct blk_dma_iter {
 
 	/* Internal to blk_rq_dma_map_iter_* */
 	struct blk_map_iter		iter;
+
 };
 
 bool blk_rq_dma_map_iter_start(struct request *req, struct device *dma_dev,

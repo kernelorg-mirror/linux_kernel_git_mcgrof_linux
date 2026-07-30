@@ -419,6 +419,24 @@ int blk_validate_limits(struct queue_limits *lim)
 			logical_block_sectors);
 
 	/*
+	 * The premapped ceiling is deliberately allowed to exceed max_sectors
+	 * (and the dma_opt_mapping_size() clamp folded into max_hw_sectors),
+	 * since premapped I/O allocates no IOVA per command.  It is still a
+	 * hard hardware ceiling, so cap it at max_hw_sectors' unclamped
+	 * sibling max_dev_sectors when the driver set one, and never let it
+	 * fall below the ordinary ceiling.  0 disables the premapped path.
+	 */
+	if (lim->max_hw_premapped_sectors) {
+		if (lim->max_dev_sectors)
+			lim->max_hw_premapped_sectors = min(lim->max_hw_premapped_sectors,
+							 lim->max_dev_sectors);
+		lim->max_hw_premapped_sectors = max(lim->max_hw_premapped_sectors,
+						 lim->max_sectors);
+		lim->max_hw_premapped_sectors = round_down(lim->max_hw_premapped_sectors,
+							logical_block_sectors);
+	}
+
+	/*
 	 * Random default for the maximum number of segments.  Driver should not
 	 * rely on this and set their own.
 	 */

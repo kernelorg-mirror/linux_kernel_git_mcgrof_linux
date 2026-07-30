@@ -438,6 +438,9 @@ static struct request *blk_mq_rq_ctx_init(struct blk_mq_alloc_data *data,
 	rq->stats_sectors = 0;
 	rq->nr_phys_segments = 0;
 	rq->nr_integrity_segments = 0;
+#ifdef CONFIG_BLK_IOBUF_POOL
+	rq->dma_premap = NULL;
+#endif
 	rq->end_io = NULL;
 	rq->end_io_data = NULL;
 
