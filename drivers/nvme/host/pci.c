@@ -86,6 +86,11 @@ static bool use_cmb_sqes = true;
 module_param(use_cmb_sqes, bool, 0444);
 MODULE_PARM_DESC(use_cmb_sqes, "use controller's memory buffer for I/O SQes");
 
+static bool lift_dma_opt_clamp;
+module_param(lift_dma_opt_clamp, bool, 0644);
+MODULE_PARM_DESC(lift_dma_opt_clamp,
+	"lift the dma_opt clamp so max_hw_sectors is the true DMA ceiling");
+
 static unsigned int max_host_mem_size_mb = 128;
 module_param(max_host_mem_size_mb, uint, 0444);
 MODULE_PARM_DESC(max_host_mem_size_mb,
@@ -3749,12 +3754,18 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 	dma_set_max_seg_size(&pdev->dev, 0xffffffff);
 
 	/*
-	 * Limit the max command size to prevent iod->sg allocations going
-	 * over a single page.
+	 * Cap the transfer size at the DMA-optimal mapping size so per-IO
+	 * IOVA allocations stay within the IOVA range cache.  Since a
+	 * request now takes a single IOVA allocation for the whole
+	 * transfer, larger commands cost fewer mapping operations, not
+	 * more; the lift_dma_opt_clamp module parameter raises the ceiling
+	 * to the true DMA limit and lets max_sectors_kb size the request.
 	 */
 	dev->ctrl.max_hw_sectors = min_t(u32,
 			NVME_MAX_BYTES >> SECTOR_SHIFT,
-			dma_opt_mapping_size(&pdev->dev) >> 9);
+			(lift_dma_opt_clamp ?
+				dma_max_mapping_size(&pdev->dev) :
+				dma_opt_mapping_size(&pdev->dev)) >> 9);
 	/*
 	 * Premapped I/O skips the dma_opt clamp but is still bounded by
 	 * NVME_MAX_BYTES, which the PRP/SGL descriptor pool is dimensioned for.
