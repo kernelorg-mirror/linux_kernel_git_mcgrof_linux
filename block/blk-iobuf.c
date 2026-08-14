@@ -39,6 +39,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <uapi/linux/blkdev.h>
 
 struct blk_iobuf_pool {
 	struct kref		ref;
@@ -50,6 +51,17 @@ struct blk_iobuf_pool {
 	atomic_t		in_use;
 	atomic_long_t		high_water;
 	atomic64_t		alloc_failures;
+	atomic64_t		premap_attempts;
+	atomic64_t		premap_successes;
+	atomic64_t		premap_fallbacks;
+	atomic64_t		premap_no_translating_iommu;
+	atomic64_t		premap_pgsize_unsupported;
+	atomic64_t		premap_iova_no_space;
+	atomic64_t		premap_iova_misaligned;
+	atomic64_t		premap_other_failures;
+	atomic64_t		premap_link_failures;
+	atomic64_t		premap_sync_failures;
+	atomic64_t		premap_strict_rejections;
 	struct rcu_head		rcu;
 };
 
@@ -270,6 +282,26 @@ u64 blk_iobuf_pool_alloc_failures(const struct blk_iobuf_pool *pool)
 }
 EXPORT_SYMBOL_GPL(blk_iobuf_pool_alloc_failures);
 
+void blk_iobuf_pool_premap_stats(const struct blk_iobuf_pool *pool,
+		struct blk_iobuf_premap_stats *stats)
+{
+	stats->attempts = atomic64_read(&pool->premap_attempts);
+	stats->successes = atomic64_read(&pool->premap_successes);
+	stats->fallbacks = atomic64_read(&pool->premap_fallbacks);
+	stats->no_translating_iommu =
+		atomic64_read(&pool->premap_no_translating_iommu);
+	stats->pgsize_unsupported =
+		atomic64_read(&pool->premap_pgsize_unsupported);
+	stats->iova_no_space = atomic64_read(&pool->premap_iova_no_space);
+	stats->iova_misaligned = atomic64_read(&pool->premap_iova_misaligned);
+	stats->other_failures = atomic64_read(&pool->premap_other_failures);
+	stats->link_failures = atomic64_read(&pool->premap_link_failures);
+	stats->sync_failures = atomic64_read(&pool->premap_sync_failures);
+	stats->strict_rejections =
+		atomic64_read(&pool->premap_strict_rejections);
+}
+EXPORT_SYMBOL_GPL(blk_iobuf_pool_premap_stats);
+
 /*
  * Queue attachment.
  *
@@ -372,19 +404,26 @@ struct blk_iobuf_reg {
 	struct blk_dma_premap	premap;
 };
 
+static void blk_iobuf_reg_release(void *data);
+
 /*
  * Recover the retained DMA mapping of a pool-backed fixed buffer from the
- * opaque provider data io_uring hands back for a kernel buffer (see
- * io_uring_cmd_kbuf_priv()).  Returns the retained mapping only when @kbuf_priv
- * is one of our registrations premapped to @dma_dev; NULL otherwise.  The magic
- * guards against being handed some other provider's kernel buffer.
+ * kernel buffer resolved for @cmd.  io_uring verifies our release callback
+ * before returning the private pointer, so it is safe to interpret as a
+ * blk_iobuf_reg.  Return the retained mapping only when it belongs to
+ * @dma_dev; NULL otherwise.
  */
-struct blk_dma_premap *blk_iobuf_fixed_buf_premap(void *kbuf_priv,
-						  struct device *dma_dev)
+struct blk_dma_premap *blk_iobuf_fixed_buf_premap(
+		struct io_uring_cmd *cmd, unsigned int issue_flags,
+		struct device *dma_dev)
 {
-	struct blk_iobuf_reg *reg = kbuf_priv;
+	struct blk_iobuf_reg *reg;
 
-	if (!reg || reg->magic != BLK_IOBUF_REG_MAGIC)
+	reg = io_uring_cmd_kbuf_priv(cmd, issue_flags,
+					blk_iobuf_reg_release);
+	if (!reg)
+		return NULL;
+	if (WARN_ON_ONCE(reg->magic != BLK_IOBUF_REG_MAGIC))
 		return NULL;
 	if (!reg->dma_dev || reg->dma_dev != dma_dev)
 		return NULL;
@@ -401,7 +440,7 @@ EXPORT_SYMBOL_GPL(blk_iobuf_fixed_buf_premap);
  * blk_iobuf_reg_dma_unmap().
  */
 static int blk_iobuf_reg_dma_map(struct blk_iobuf_reg *reg,
-				 struct device *dma_dev)
+				 struct device *dma_dev, bool strict)
 {
 	unsigned int folio_size = blk_iobuf_pool_folio_size(reg->pool);
 	size_t total = (size_t)reg->nr_folios * folio_size;
@@ -417,8 +456,12 @@ static int blk_iobuf_reg_dma_map(struct blk_iobuf_reg *reg,
 	 * stays correct, and premapping there would owe per-I/O cache maintenance
 	 * that defeats its purpose anyway.
 	 */
-	if (!dev_is_dma_coherent(dma_dev))
+	if (!dev_is_dma_coherent(dma_dev)) {
+		atomic64_inc(&reg->pool->premap_other_failures);
+		if (strict)
+			atomic64_inc(&reg->pool->premap_strict_rejections);
 		return -EOPNOTSUPP;
+	}
 
 	/*
 	 * Reserve one contiguous IOVA for the whole buffer and link each folio
@@ -427,38 +470,84 @@ static int blk_iobuf_reg_dma_map(struct blk_iobuf_reg *reg,
 	 * IOMMU; the caller then registers an ordinary dynamically mapped buffer
 	 * (which pays no dma_opt clamp there anyway).
 	 */
-	if (!dma_iova_try_alloc(dma_dev, &reg->premap.state,
-			(phys_addr_t)folio_pfn(reg->folios[0]) << PAGE_SHIFT,
-			total))
+	if (strict) {
+		ret = dma_iova_alloc_pgsized(dma_dev, &reg->premap.state,
+				(phys_addr_t)folio_pfn(reg->folios[0]) << PAGE_SHIFT,
+				total, folio_size);
+		if (ret) {
+			switch (ret) {
+			case -ENODEV:
+				atomic64_inc(&reg->pool->premap_no_translating_iommu);
+				break;
+			case -EOPNOTSUPP:
+				atomic64_inc(&reg->pool->premap_pgsize_unsupported);
+				break;
+			case -ENOSPC:
+				atomic64_inc(&reg->pool->premap_iova_no_space);
+				break;
+			case -ERANGE:
+				atomic64_inc(&reg->pool->premap_iova_misaligned);
+				break;
+			default:
+				atomic64_inc(&reg->pool->premap_other_failures);
+				break;
+			}
+			atomic64_inc(&reg->pool->premap_strict_rejections);
+			return ret;
+		}
+	} else if (!dma_iova_try_alloc(dma_dev, &reg->premap.state,
+			   (phys_addr_t)folio_pfn(reg->folios[0]) << PAGE_SHIFT,
+			   total)) {
+		atomic64_inc(&reg->pool->premap_other_failures);
 		return -EOPNOTSUPP;
+	}
 
 	for (i = 0; i < reg->nr_folios; i++) {
-		ret = dma_iova_link(dma_dev, &reg->premap.state,
-				(phys_addr_t)folio_pfn(reg->folios[i]) << PAGE_SHIFT,
-				mapped, folio_size, DMA_BIDIRECTIONAL, 0);
-		if (ret)
+		if (strict)
+			ret = dma_iova_link_pgsized(dma_dev, &reg->premap.state,
+					(phys_addr_t)folio_pfn(reg->folios[i]) << PAGE_SHIFT,
+					mapped, folio_size, DMA_BIDIRECTIONAL,
+					DMA_ATTR_REQUIRE_COHERENT);
+		else
+			ret = dma_iova_link(dma_dev, &reg->premap.state,
+					(phys_addr_t)folio_pfn(reg->folios[i]) << PAGE_SHIFT,
+					mapped, folio_size, DMA_BIDIRECTIONAL, 0);
+		if (ret) {
+			atomic64_inc(&reg->pool->premap_link_failures);
+			if (strict)
+				atomic64_inc(&reg->pool->premap_strict_rejections);
 			goto destroy;
+		}
 		mapped += folio_size;
 	}
 	ret = dma_iova_sync(dma_dev, &reg->premap.state, 0, mapped);
-	if (ret)
+	if (ret) {
+		atomic64_inc(&reg->pool->premap_sync_failures);
+		if (strict)
+			atomic64_inc(&reg->pool->premap_strict_rejections);
 		goto destroy;
+	}
 
 	reg->premap.dma_dev = dma_dev;
 	reg->premap.len = total;
 	reg->dma_dev = dma_dev;
 	return 0;
 destroy:
-	dma_iova_destroy(dma_dev, &reg->premap.state, mapped, DMA_BIDIRECTIONAL, 0);
+	dma_iova_destroy(dma_dev, &reg->premap.state, mapped, DMA_BIDIRECTIONAL,
+			strict ? DMA_ATTR_REQUIRE_COHERENT : 0);
 	return ret;
 }
 
 static void blk_iobuf_reg_dma_unmap(struct blk_iobuf_reg *reg)
 {
+	unsigned long attrs;
+
 	if (!reg->dma_dev)
 		return;
+	attrs = dma_iova_min_pgsize(&reg->premap.state) ?
+		DMA_ATTR_REQUIRE_COHERENT : 0;
 	dma_iova_destroy(reg->dma_dev, &reg->premap.state, reg->premap.len,
-			 DMA_BIDIRECTIONAL, 0);
+			 DMA_BIDIRECTIONAL, attrs);
 	reg->dma_dev = NULL;
 }
 
@@ -483,6 +572,7 @@ static void blk_iobuf_reg_release(void *data)
  *               ordinary dynamically mapped buffer (unchanged behaviour)
  * @buf_index:   sparse fixed-buffer slot to fill
  * @len:         logical buffer length
+ * @alloc_flags: BLOCK_URING_CMD_ALLOC_IOBUF_F_* flags
  * @issue_flags: uring_cmd issue flags
  *
  * Checks out ceil(len / folio_size) folios strictly from @pool, zeroes them,
@@ -499,7 +589,8 @@ static void blk_iobuf_reg_release(void *data)
 int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 			      struct blk_iobuf_pool *pool,
 			      struct device *dma_dev,
-			      u64 buf_index, u64 len, unsigned int issue_flags)
+			      u64 buf_index, u64 len, unsigned int alloc_flags,
+			      unsigned int issue_flags)
 {
 	unsigned int folio_size = blk_iobuf_pool_folio_size(pool);
 	struct io_uring_cmd_buf_desc desc;
@@ -507,9 +598,20 @@ int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 	unsigned int nr_folios, i;
 	size_t remaining;
 	int ret;
+	bool strict = alloc_flags &
+		BLOCK_URING_CMD_ALLOC_IOBUF_F_STRICT_PGSIZE;
+	bool fallback = !dma_dev;
+	bool premapped = false;
 
+	if (alloc_flags & ~BLOCK_URING_CMD_ALLOC_IOBUF_F_STRICT_PGSIZE)
+		return -EINVAL;
 	if (!len || len > MAX_RW_COUNT || buf_index > UINT_MAX)
 		return -EINVAL;
+	atomic64_inc(&pool->premap_attempts);
+	if (strict && !dma_dev) {
+		atomic64_inc(&pool->premap_strict_rejections);
+		return -EOPNOTSUPP;
+	}
 	nr_folios = DIV_ROUND_UP(len, folio_size);
 
 	reg = kzalloc(sizeof(*reg), GFP_KERNEL);
@@ -539,10 +641,14 @@ int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 	}
 
 	if (dma_dev) {
-		ret = blk_iobuf_reg_dma_map(reg, dma_dev);
+		ret = blk_iobuf_reg_dma_map(reg, dma_dev, strict);
 		/* No translating IOMMU: no IOVA to premap, no clamp to beat. */
-		if (ret && ret != -EOPNOTSUPP)
+		if (ret && (strict || ret != -EOPNOTSUPP))
 			goto err_free_batch;
+		if (ret)
+			fallback = true;
+		else
+			premapped = true;
 	}
 
 	desc = (struct io_uring_cmd_buf_desc){
@@ -559,6 +665,10 @@ int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 		blk_iobuf_pool_free_batch(pool, reg->folios, nr_folios);
 		goto err;
 	}
+	if (fallback)
+		atomic64_inc(&pool->premap_fallbacks);
+	if (premapped)
+		atomic64_inc(&pool->premap_successes);
 	return 0;	/* io_uring owns reg via the release callback */
 
 err_free_batch:

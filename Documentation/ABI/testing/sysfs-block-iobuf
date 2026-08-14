@@ -1,0 +1,29 @@
+What:		/sys/block/<disk>/queue/iobuf_pool_premap_stats
+Date:		August 2026
+Contact:	linux-block@vger.kernel.org
+Description:
+		[RO] Reports whether allocations from a block I/O buffer pool
+		obtained a persistent DMA-IOMMU mapping.  The file contains one
+		``name=value`` counter per line, or ``disabled`` when the queue
+		has no buffer pool.
+
+		``attempts`` counts syntactically valid allocation commands which
+		reached the current pool, including commands which later fail folio
+		allocation, DMA mapping, or io_uring registration.  ``successes``
+		counts commands which both retained a DMA-IOMMU mapping and completed
+		io_uring registration.  ``fallbacks`` counts successful registrations
+		without a retained map, including providers with no DMA device and
+		best-effort mapping failures.  Failed commands therefore need not
+		appear in either ``successes`` or ``fallbacks``.
+
+		The remaining counters describe DMA premap failures: no translating
+		IOMMU, unsupported page size, IOVA space exhaustion, IOVA
+		misalignment, other allocation failures, link failures, and final
+		IOTLB synchronization failures.  ``strict_rejections`` overlaps the
+		applicable failure category and counts strict page-size requests which
+		were rejected instead of falling back to dynamic DMA mapping.  Folio
+		checkout and io_uring registration errors are not categorized here.
+
+		Counters are monotonic for the lifetime of the attached pool and reset
+		when that pool is replaced.  Each line is sampled independently, so a
+		read concurrent with registrations is not a transactional snapshot.

@@ -231,6 +231,7 @@ config BLK_ERROR_INJECTION
 
 config BLK_IOBUF_POOL
 	bool "Block layer bounded iobuf folio pool"
+	depends on IO_URING
 	default n
 	help
 	  Provide refcounted, pre-provisioned per-queue pools of higher-order

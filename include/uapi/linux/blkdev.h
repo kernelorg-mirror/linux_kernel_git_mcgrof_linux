@@ -15,16 +15,22 @@
  * Allocate one logical fixed buffer from the provider queue's iobuf pool and
  * install it into an existing sparse registered-buffer slot on the ring.
  *
- *   sqe->addr   = buf_index, the sparse fixed-buffer slot to fill
- *   sqe->addr3  = len, the logical buffer length in bytes
+ *   sqe->addr  = buf_index, the sparse fixed-buffer slot to fill
+ *   sqe->addr3 = len, the logical buffer length in bytes
+ *   sqe->len   = BLOCK_URING_CMD_ALLOC_IOBUF_F_* flags
  *
  * The provider's pool determines the folio order; the buffer is bidirectional,
  * zeroed before it becomes visible, and allocated strictly from the pool (no
  * fallback). Remove it with the ordinary registered-buffer update/unregister
- * API. Errors: -EOPNOTSUPP (no pool attached), -ENOBUFS (pool exhausted),
- * -EBUSY (slot occupied), -EINVAL (bad length or index), -ENXIO (no buffer
- * table).
+ * API. Errors include -EOPNOTSUPP (no pool attached or a strict premap is not
+ * available), -ENOBUFS (pool exhausted), -EBUSY (slot occupied), and -EINVAL
+ * (bad flags, length, index, or no registered-buffer table).  Strict mode may
+ * also return the underlying DMA-IOMMU allocation, alignment, mapping, or sync
+ * error instead of registering a dynamically mapped fallback buffer.
  */
 #define BLOCK_URING_CMD_ALLOC_IOBUF		_IO(0x12, 1)
+
+/* Fail registration unless every premap leaf is at least the pool folio size. */
+#define BLOCK_URING_CMD_ALLOC_IOBUF_F_STRICT_PGSIZE	(1U << 0)
 
 #endif

@@ -26,6 +26,20 @@ struct request_queue;
 struct io_uring_cmd;
 struct device;
 
+struct blk_iobuf_premap_stats {
+	u64 attempts;
+	u64 successes;
+	u64 fallbacks;
+	u64 no_translating_iommu;
+	u64 pgsize_unsupported;
+	u64 iova_no_space;
+	u64 iova_misaligned;
+	u64 other_failures;
+	u64 link_failures;
+	u64 sync_failures;
+	u64 strict_rejections;
+};
+
 #ifdef CONFIG_BLK_IOBUF_POOL
 
 struct blk_iobuf_pool *blk_iobuf_pool_create(unsigned int order,
@@ -50,10 +64,12 @@ void blk_queue_clear_iobuf_pool(struct request_queue *q);
 int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 			      struct blk_iobuf_pool *pool,
 			      struct device *dma_dev,
-			      u64 buf_index, u64 len, unsigned int issue_flags);
+			      u64 buf_index, u64 len, unsigned int alloc_flags,
+			      unsigned int issue_flags);
 struct blk_dma_premap;
-struct blk_dma_premap *blk_iobuf_fixed_buf_premap(void *kbuf_priv,
-						  struct device *dma_dev);
+struct blk_dma_premap *blk_iobuf_fixed_buf_premap(
+		struct io_uring_cmd *cmd, unsigned int issue_flags,
+		struct device *dma_dev);
 
 unsigned int blk_iobuf_pool_order(const struct blk_iobuf_pool *pool);
 unsigned int blk_iobuf_pool_folio_size(const struct blk_iobuf_pool *pool);
@@ -62,6 +78,8 @@ unsigned int blk_iobuf_pool_in_use(const struct blk_iobuf_pool *pool);
 unsigned int blk_iobuf_pool_available(const struct blk_iobuf_pool *pool);
 unsigned int blk_iobuf_pool_high_water(const struct blk_iobuf_pool *pool);
 u64 blk_iobuf_pool_alloc_failures(const struct blk_iobuf_pool *pool);
+void blk_iobuf_pool_premap_stats(const struct blk_iobuf_pool *pool,
+		struct blk_iobuf_premap_stats *stats);
 
 #else /* !CONFIG_BLK_IOBUF_POOL */
 
@@ -104,6 +122,14 @@ blk_queue_get_iobuf_pool(struct request_queue *q)
 
 static inline void blk_queue_clear_iobuf_pool(struct request_queue *q) {}
 
+static inline int blk_uring_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
+		struct blk_iobuf_pool *pool, struct device *dma_dev,
+		u64 buf_index, u64 len, unsigned int alloc_flags,
+		unsigned int issue_flags)
+{
+	return -EOPNOTSUPP;
+}
+
 static inline unsigned int blk_iobuf_pool_order(const struct blk_iobuf_pool *p)
 {
 	return 0;
@@ -141,6 +167,13 @@ blk_iobuf_pool_high_water(const struct blk_iobuf_pool *p)
 static inline u64 blk_iobuf_pool_alloc_failures(const struct blk_iobuf_pool *p)
 {
 	return 0;
+}
+
+static inline void
+blk_iobuf_pool_premap_stats(const struct blk_iobuf_pool *pool,
+		struct blk_iobuf_premap_stats *stats)
+{
+	*stats = (struct blk_iobuf_premap_stats){};
 }
 
 #endif /* CONFIG_BLK_IOBUF_POOL */

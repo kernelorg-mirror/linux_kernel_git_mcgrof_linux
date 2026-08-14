@@ -301,7 +301,8 @@ int io_uring_cmd_import_fixed(u64 ubuf, unsigned long len, int rw,
 EXPORT_SYMBOL_GPL(io_uring_cmd_import_fixed);
 
 void *io_uring_cmd_kbuf_priv(struct io_uring_cmd *ioucmd,
-			     unsigned int issue_flags)
+			     unsigned int issue_flags,
+			     void (*release)(void *))
 {
 	struct io_kiocb *req = cmd_to_io_kiocb(ioucmd);
 	struct io_rsrc_node *node;
@@ -313,7 +314,7 @@ void *io_uring_cmd_kbuf_priv(struct io_uring_cmd *ioucmd,
 	if (!node)
 		return NULL;
 	imu = node->buf;
-	if (!(imu->flags & IO_REGBUF_F_KBUF))
+	if (!(imu->flags & IO_REGBUF_F_KBUF) || imu->release != release)
 		return NULL;
 	return imu->priv;
 }

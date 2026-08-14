@@ -860,6 +860,7 @@ long compat_blkdev_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 struct blk_iou_cmd {
 	u64 start;
 	u64 len;
+	u32 alloc_flags;
 	int res;
 	bool nowait;
 };
@@ -947,7 +948,8 @@ static int blkdev_cmd_discard(struct io_uring_cmd *cmd,
 
 static int blkdev_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 				  struct block_device *bdev, u64 buf_index,
-				  u64 len, unsigned int issue_flags)
+				  u64 len, unsigned int alloc_flags,
+				  unsigned int issue_flags)
 {
 	struct blk_iobuf_pool *pool;
 	int ret;
@@ -957,7 +959,7 @@ static int blkdev_cmd_alloc_iobuf(struct io_uring_cmd *cmd,
 		return -EOPNOTSUPP;
 	/* dma_dev NULL: dynamically mapped, the existing behaviour. */
 	ret = blk_uring_cmd_alloc_iobuf(cmd, pool, NULL, buf_index, len,
-					issue_flags);
+					alloc_flags, issue_flags);
 	blk_iobuf_pool_put(pool);
 	return ret;
 }
@@ -972,12 +974,13 @@ int blkdev_uring_cmd(struct io_uring_cmd *cmd, unsigned int issue_flags)
 	if (!(cmd->flags & IORING_URING_CMD_REISSUE)) {
 		const struct io_uring_sqe *sqe = cmd->sqe;
 
-		if (unlikely(sqe->ioprio || sqe->__pad1 || sqe->len ||
-			     sqe->rw_flags || sqe->file_index))
+		if (unlikely(sqe->ioprio || sqe->__pad1 || sqe->rw_flags ||
+			     sqe->file_index))
 			return -EINVAL;
 
 		bic->start = READ_ONCE(sqe->addr);
 		bic->len = READ_ONCE(sqe->addr3);
+		bic->alloc_flags = READ_ONCE(sqe->len);
 	}
 
 	bic->res = 0;
@@ -985,11 +988,13 @@ int blkdev_uring_cmd(struct io_uring_cmd *cmd, unsigned int issue_flags)
 
 	switch (cmd_op) {
 	case BLOCK_URING_CMD_DISCARD:
+		if (bic->alloc_flags)
+			return -EINVAL;
 		return blkdev_cmd_discard(cmd, bdev, bic->start, bic->len,
 					  bic->nowait);
 	case BLOCK_URING_CMD_ALLOC_IOBUF:
 		return blkdev_cmd_alloc_iobuf(cmd, bdev, bic->start, bic->len,
-					      issue_flags);
+					      bic->alloc_flags, issue_flags);
 	}
 	return -EINVAL;
 }

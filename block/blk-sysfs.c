@@ -6,6 +6,7 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/bio.h>
+#include <linux/blk-iobuf.h>
 #include <linux/blkdev.h>
 #include <linux/backing-dev.h>
 #include <linux/blktrace_api.h>
@@ -59,6 +60,40 @@ static ssize_t queue_requests_show(struct gendisk *disk, char *page)
 	mutex_lock(&disk->queue->elevator_lock);
 	ret = queue_var_show(disk->queue->nr_requests, page);
 	mutex_unlock(&disk->queue->elevator_lock);
+	return ret;
+}
+
+static ssize_t queue_iobuf_premap_stats_show(struct gendisk *disk, char *page)
+{
+	struct blk_iobuf_premap_stats stats;
+	struct blk_iobuf_pool *pool;
+	ssize_t ret;
+
+	pool = blk_queue_get_iobuf_pool(disk->queue);
+	if (!pool)
+		return sysfs_emit(page, "disabled\n");
+	blk_iobuf_pool_premap_stats(pool, &stats);
+	blk_iobuf_pool_put(pool);
+
+	ret = sysfs_emit(page, "attempts=%llu\n", stats.attempts);
+	ret += sysfs_emit_at(page, ret, "successes=%llu\n", stats.successes);
+	ret += sysfs_emit_at(page, ret, "fallbacks=%llu\n", stats.fallbacks);
+	ret += sysfs_emit_at(page, ret, "no_translating_iommu=%llu\n",
+			     stats.no_translating_iommu);
+	ret += sysfs_emit_at(page, ret, "pgsize_unsupported=%llu\n",
+			     stats.pgsize_unsupported);
+	ret += sysfs_emit_at(page, ret, "iova_no_space=%llu\n",
+			     stats.iova_no_space);
+	ret += sysfs_emit_at(page, ret, "iova_misaligned=%llu\n",
+			     stats.iova_misaligned);
+	ret += sysfs_emit_at(page, ret, "other_failures=%llu\n",
+			     stats.other_failures);
+	ret += sysfs_emit_at(page, ret, "link_failures=%llu\n",
+			     stats.link_failures);
+	ret += sysfs_emit_at(page, ret, "sync_failures=%llu\n",
+			     stats.sync_failures);
+	ret += sysfs_emit_at(page, ret, "strict_rejections=%llu\n",
+			     stats.strict_rejections);
 	return ret;
 }
 
@@ -609,6 +644,7 @@ static const struct queue_sysfs_entry _prefix##_entry = {	\
 }
 
 QUEUE_RW_ENTRY(queue_requests, "nr_requests");
+QUEUE_RO_ENTRY(queue_iobuf_premap_stats, "iobuf_pool_premap_stats");
 QUEUE_RW_ENTRY(queue_async_depth, "async_depth");
 QUEUE_RW_ENTRY(queue_ra, "read_ahead_kb");
 QUEUE_LIM_RW_ENTRY(queue_max_sectors, "max_sectors_kb");
@@ -787,6 +823,7 @@ static const struct attribute *const queue_attrs[] = {
 	&queue_poll_entry.attr,
 	&queue_poll_delay_entry.attr,
 	&queue_zoned_qd1_writes_entry.attr,
+	&queue_iobuf_premap_stats_entry.attr,
 
 	NULL,
 };

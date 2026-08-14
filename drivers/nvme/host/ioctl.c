@@ -123,22 +123,27 @@ static struct request *nvme_alloc_user_request(struct request_queue *q,
 	return req;
 }
 
-static void nvme_setup_premapped(struct request *req, struct nvme_ns *ns,
-				 struct io_uring_cmd *ioucmd,
-				 unsigned int issue_flags)
+static int nvme_setup_premapped(struct request *req, struct nvme_ns *ns,
+				struct io_uring_cmd *ioucmd,
+				unsigned int issue_flags, u64 offset,
+				unsigned int flags)
 {
 #ifdef CONFIG_BLK_IOBUF_POOL
 	struct blk_dma_premap *premap;
-	void *kbuf_priv;
 
 	if (!ioucmd)
-		return;
-	kbuf_priv = io_uring_cmd_kbuf_priv(ioucmd, issue_flags);
-	if (!kbuf_priv)
-		return;
-	premap = blk_iobuf_fixed_buf_premap(kbuf_priv, ns->ctrl->dev);
+		return 0;
+	premap = blk_iobuf_fixed_buf_premap(ioucmd, issue_flags,
+						 ns->ctrl->dev);
 	if (!premap)
-		return;
+		return 0;
+	/*
+	 * The DMA iterator currently represents only one contiguous range from
+	 * the retained mapping's base.  Fail closed until it can carry fixed-
+	 * buffer byte offsets and vector geometry explicitly.
+	 */
+	if (offset || (flags & NVME_IOCTL_VEC))
+		return -EINVAL;
 	/*
 	 * The buffer is persistently mapped to our DMA device. Record the
 	 * retained mapping BEFORE the buffer is mapped into the request, so
@@ -148,6 +153,7 @@ static void nvme_setup_premapped(struct request *req, struct nvme_ns *ns,
 	 */
 	req->dma_premap = premap;
 #endif
+	return 0;
 }
 
 static int nvme_map_user_request(struct request *req, u64 ubuffer,
@@ -171,8 +177,12 @@ static int nvme_map_user_request(struct request *req, u64 ubuffer,
 	 * premapped buffer outright. Recording req->dma_premap first lets that
 	 * gate use max_hw_premapped_sectors instead.
 	 */
-	if (ns)
-		nvme_setup_premapped(req, ns, ioucmd, issue_flags);
+	if (ns) {
+		ret = nvme_setup_premapped(req, ns, ioucmd, issue_flags,
+					   ubuffer, flags);
+		if (ret)
+			return ret;
+	}
 
 	if (iter) {
 		struct blk_rq_map_user_opts opts = {};
@@ -704,14 +714,18 @@ static int nvme_ns_alloc_iobuf(struct nvme_ns *ns, struct io_uring_cmd *ioucmd,
 	const struct io_uring_sqe *sqe = ioucmd->sqe;
 	struct blk_iobuf_pool *pool;
 	u64 buf_index, len;
+	u32 alloc_flags;
 	int ret;
 
 	if (READ_ONCE(sqe->ioprio) || READ_ONCE(sqe->__pad1) ||
-	    READ_ONCE(sqe->len) || READ_ONCE(sqe->rw_flags) ||
+	    READ_ONCE(sqe->rw_flags) ||
 	    READ_ONCE(sqe->file_index))
 		return -EINVAL;
 	buf_index = READ_ONCE(sqe->addr);
 	len = READ_ONCE(sqe->addr3);
+	alloc_flags = READ_ONCE(sqe->len);
+	if (alloc_flags & ~BLOCK_URING_CMD_ALLOC_IOBUF_F_STRICT_PGSIZE)
+		return -EINVAL;
 
 	pool = blk_queue_get_iobuf_pool(ns->queue);
 	if (!pool)
@@ -728,7 +742,7 @@ static int nvme_ns_alloc_iobuf(struct nvme_ns *ns, struct io_uring_cmd *ioucmd,
 	 */
 	ret = blk_uring_cmd_alloc_iobuf(ioucmd, pool,
 				       can_premap ? ns->ctrl->dev : NULL,
-				       buf_index, len, issue_flags);
+				       buf_index, len, alloc_flags, issue_flags);
 	blk_iobuf_pool_put(pool);
 	return ret;
 }
