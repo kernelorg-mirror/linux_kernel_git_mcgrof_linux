@@ -13,6 +13,7 @@
 
 #include <linux/export.h>
 #include <linux/iommu.h>
+#include <trace/events/iommu.h>
 #include "../iommu-pages.h"
 #include <linux/cleanup.h>
 #include <linux/dma-mapping.h>
@@ -164,7 +165,8 @@ static __maybe_unused int make_range_u64(struct pt_common *common,
 	})
 
 static inline unsigned int compute_best_pgsize(struct pt_state *pts,
-					       pt_oaddr_t oa)
+					       pt_oaddr_t oa,
+					       pt_vaddr_t pgsize_bitmap)
 {
 	struct pt_iommu *iommu_table = iommu_from_common(pts->range->common);
 
@@ -175,7 +177,7 @@ static inline unsigned int compute_best_pgsize(struct pt_state *pts,
 	 * The page size is limited by the domain's bitmap. This allows the core
 	 * code to reduce the supported page sizes by changing the bitmap.
 	 */
-	return pt_compute_best_pgsize(pt_possible_sizes(pts) &
+	return pt_compute_best_pgsize(pt_possible_sizes(pts) & pgsize_bitmap &
 					      iommu_table->domain.pgsize_bitmap,
 				      pts->range->va, pts->range->last_va, oa);
 }
@@ -511,6 +513,7 @@ struct pt_iommu_map_args {
 	struct iommu_iotlb_gather *iotlb_gather;
 	struct pt_write_attrs attrs;
 	pt_oaddr_t oa;
+	pt_vaddr_t pgsize_bitmap;
 	unsigned int leaf_pgsize_lg2;
 	unsigned int leaf_level;
 	pt_vaddr_t num_leaves;
@@ -572,6 +575,7 @@ static int __map_range_leaf(struct pt_range *range, void *arg,
 	struct pt_state pts = pt_init(range, level, table);
 	struct pt_iommu_map_args *map = arg;
 	unsigned int leaf_pgsize_lg2 = map->leaf_pgsize_lg2;
+	pt_vaddr_t installed_iova = range->va;
 	unsigned int leaves_avail;
 	unsigned int start_index;
 	pt_oaddr_t oa = map->oa;
@@ -617,9 +621,11 @@ static int __map_range_leaf(struct pt_range *range, void *arg,
 		}
 
 		if (IS_ENABLED(CONFIG_DEBUG_GENERIC_PT)) {
+			unsigned int best_pgsize_lg2;
+
 			pt_index_to_va(&pts);
-			PT_WARN_ON(compute_best_pgsize(&pts, oa) !=
-				   leaf_pgsize_lg2);
+			best_pgsize_lg2 = compute_best_pgsize(&pts, oa, map->pgsize_bitmap);
+			PT_WARN_ON(best_pgsize_lg2 != leaf_pgsize_lg2);
 		}
 		pt_install_leaf_entry(&pts, oa, leaf_pgsize_lg2, &map->attrs);
 
@@ -628,6 +634,11 @@ static int __map_range_leaf(struct pt_range *range, void *arg,
 	} while (pts.index < pts.end_index);
 
 	flush_writes_range(&pts, start_index, pts.index);
+	if (trace_iommu_map_leaf_enabled() && oa != map->oa)
+		trace_iommu_map_leaf(&iommu_table->domain, installed_iova,
+				     map->oa,
+				     log2_to_int(leaf_pgsize_lg2),
+				     oa - map->oa, ret);
 
 	map->oa = oa;
 	map->num_leaves = num_leaves;
@@ -650,10 +661,10 @@ static int __map_range_leaf(struct pt_range *range, void *arg,
 	 * parameters.
 	 */
 	map->leaf_pgsize_lg2 = pt_compute_best_pgsize(
-		iommu_table->domain.pgsize_bitmap, last_va, range->last_va, oa);
+		map->pgsize_bitmap, last_va, range->last_va, oa);
 	map->leaf_level =
 		pt_pgsz_lg2_to_level(range->common, map->leaf_pgsize_lg2);
-	map->num_leaves = pt_pgsz_count(iommu_table->domain.pgsize_bitmap,
+	map->num_leaves = pt_pgsz_count(map->pgsize_bitmap,
 					last_va, range->last_va, oa,
 					map->leaf_pgsize_lg2);
 
@@ -752,12 +763,19 @@ static __always_inline int __do_map_single_page(struct pt_range *range,
 
 	pts.type = pt_load_single_entry(&pts);
 	if (pts.level == 0) {
+		struct pt_iommu *iommu_table =
+			iommu_from_common(range->common);
+		pt_oaddr_t oa = map->oa;
+
 		if (pts.type != PT_ENTRY_EMPTY)
 			return -EADDRINUSE;
-		pt_install_leaf_entry(&pts, map->oa, PAGE_SHIFT,
+		pt_install_leaf_entry(&pts, oa, PAGE_SHIFT,
 				      &map->attrs);
 		/* No flush, not used when incoherent */
 		map->oa += PAGE_SIZE;
+		if (trace_iommu_map_leaf_enabled())
+			trace_iommu_map_leaf(&iommu_table->domain, range->va, oa,
+					     PAGE_SIZE, PAGE_SIZE, 0);
 		return 0;
 	}
 	if (pts.type == PT_ENTRY_TABLE)
@@ -929,22 +947,26 @@ static int do_map(struct pt_range *range, struct pt_common *common,
 
 static int NS(map_range)(struct pt_iommu *iommu_table, dma_addr_t iova,
 			 phys_addr_t paddr, dma_addr_t len, unsigned int prot,
-			 gfp_t gfp, size_t *mapped)
+			 gfp_t gfp, unsigned long pgsize_bitmap, size_t *mapped)
 {
-	pt_vaddr_t pgsize_bitmap = iommu_table->domain.pgsize_bitmap;
 	struct pt_common *common = common_from_iommu(iommu_table);
 	struct iommu_iotlb_gather iotlb_gather;
 	struct pt_iommu_map_args map = {
 		.iotlb_gather = &iotlb_gather,
 		.oa = paddr,
+		.pgsize_bitmap = pgsize_bitmap,
 	};
 	bool single_page = false;
 	struct pt_range range;
 	int ret;
 
 	iommu_iotlb_gather_init(&iotlb_gather);
+	pgsize_bitmap &= iommu_table->domain.pgsize_bitmap;
+	map.pgsize_bitmap = pgsize_bitmap;
 
 	if (WARN_ON(!(prot & (IOMMU_READ | IOMMU_WRITE))))
+		return -EINVAL;
+	if (WARN_ON(!pgsize_bitmap))
 		return -EINVAL;
 
 	/* Check the paddr doesn't exceed what the table can store */

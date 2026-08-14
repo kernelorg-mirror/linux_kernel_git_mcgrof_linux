@@ -95,6 +95,7 @@ struct pt_iommu_ops {
 	 * @len: Length of the range starting from @iova
 	 * @prot: A bitmap of IOMMU_READ/WRITE/CACHE/NOEXEC/MMIO
 	 * @gfp: GFP flags for any memory allocations
+	 * @pgsize_bitmap: Page sizes this mapping is allowed to use
 	 *
 	 * The range starting at IOVA will have paddr installed into it. The
 	 * rage is automatically segmented into optimally sized table entries,
@@ -112,7 +113,8 @@ struct pt_iommu_ops {
 	 */
 	int (*map_range)(struct pt_iommu *iommu_table, dma_addr_t iova,
 			 phys_addr_t paddr, dma_addr_t len, unsigned int prot,
-			 gfp_t gfp, size_t *mapped);
+			 gfp_t gfp, unsigned long pgsize_bitmap,
+			 size_t *mapped);
 
 	/**
 	 * @unmap_range: Make a range of IOVA empty/not present

@@ -24,6 +24,11 @@ int iommu_dma_sw_msi(struct iommu_domain *domain, struct msi_desc *desc,
 
 extern bool iommu_dma_forcedac;
 
+int iommu_dma_iova_validate_pgsize(unsigned long pgsize_bitmap,
+		phys_addr_t phys, size_t size, size_t min_pgsize);
+int iommu_dma_iova_validate_link(dma_addr_t addr, phys_addr_t phys,
+		size_t size, size_t min_pgsize);
+
 #else /* CONFIG_IOMMU_DMA */
 
 static inline void iommu_setup_dma_ops(struct device *dev,

@@ -14,6 +14,7 @@
 #include <linux/tracepoint.h>
 
 struct device;
+struct iommu_domain;
 
 DECLARE_EVENT_CLASS(iommu_group_event,
 
@@ -98,6 +99,45 @@ TRACE_EVENT(map,
 		  __entry->iova, __entry->iova + __entry->size, __entry->paddr,
 		  __entry->size
 	)
+);
+
+/*
+ * Records entries installed by one low-level mapping operation.  A later
+ * failure may still cause the caller to unwind them, so this is not a
+ * transaction-commit record; @status distinguishes partial/error installs.
+ */
+TRACE_EVENT(iommu_map_leaf,
+
+	TP_PROTO(struct iommu_domain *domain, dma_addr_t iova,
+		 phys_addr_t paddr, size_t leaf_size, size_t mapped_bytes,
+		 int status),
+
+	TP_ARGS(domain, iova, paddr, leaf_size, mapped_bytes, status),
+
+	TP_STRUCT__entry(
+		__field(struct iommu_domain *, domain)
+		__field(u64, iova)
+		__field(u64, paddr)
+		__field(size_t, leaf_size)
+		__field(size_t, leaves)
+		__field(size_t, mapped_bytes)
+		__field(int, status)
+	),
+
+	TP_fast_assign(
+		__entry->domain = domain;
+		__entry->iova = iova;
+		__entry->paddr = paddr;
+		__entry->leaf_size = leaf_size;
+		__entry->leaves = mapped_bytes / leaf_size;
+		__entry->mapped_bytes = mapped_bytes;
+		__entry->status = status;
+	),
+
+	TP_printk("domain=%p iova=0x%016llx paddr=0x%016llx leaf_size=%zu leaves=%zu mapped_bytes=%zu status=%d",
+		  __entry->domain, __entry->iova, __entry->paddr,
+		  __entry->leaf_size, __entry->leaves,
+		  __entry->mapped_bytes, __entry->status)
 );
 
 TRACE_EVENT(unmap,

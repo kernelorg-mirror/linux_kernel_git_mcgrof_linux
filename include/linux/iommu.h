@@ -948,6 +948,9 @@ extern int iommu_map(struct iommu_domain *domain, unsigned long iova,
 		     phys_addr_t paddr, size_t size, int prot, gfp_t gfp);
 int iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
 		phys_addr_t paddr, size_t size, int prot, gfp_t gfp);
+int iommu_map_nosync_pgsized(struct iommu_domain *domain, unsigned long iova,
+		phys_addr_t paddr, size_t size, size_t min_pgsize, int prot,
+		gfp_t gfp);
 int iommu_sync_map(struct iommu_domain *domain, unsigned long iova,
 		size_t size);
 extern size_t iommu_unmap(struct iommu_domain *domain, unsigned long iova,

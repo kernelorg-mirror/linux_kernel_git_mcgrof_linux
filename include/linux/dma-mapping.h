@@ -120,6 +120,7 @@
 struct dma_iova_state {
 	dma_addr_t addr;
 	u64 __size;
+	size_t __min_pgsize;
 };
 
 /*
@@ -131,6 +132,19 @@ static inline size_t dma_iova_size(struct dma_iova_state *state)
 {
 	/* Casting is needed for 32-bits systems */
 	return (size_t)(state->__size & ~DMA_IOVA_USE_SWIOTLB);
+}
+
+/**
+ * dma_iova_min_pgsize - return a strict mapping's minimum IOMMU page size
+ * @state: IOVA state
+ *
+ * Returns the minimum IOMMU leaf size guaranteed for a strict IOVA mapping,
+ * or zero for an ordinary IOVA mapping.
+ */
+static inline size_t
+dma_iova_min_pgsize(const struct dma_iova_state *state)
+{
+	return state->__min_pgsize;
 }
 
 #ifdef CONFIG_DMA_API_DEBUG
@@ -366,6 +380,8 @@ static inline bool dma_use_iova(struct dma_iova_state *state)
 
 bool dma_iova_try_alloc(struct device *dev, struct dma_iova_state *state,
 		phys_addr_t phys, size_t size);
+int dma_iova_alloc_pgsized(struct device *dev, struct dma_iova_state *state,
+		phys_addr_t phys, size_t size, size_t min_pgsize);
 void dma_iova_free(struct device *dev, struct dma_iova_state *state);
 void dma_iova_destroy(struct device *dev, struct dma_iova_state *state,
 		size_t mapped_len, enum dma_data_direction dir,
@@ -373,6 +389,9 @@ void dma_iova_destroy(struct device *dev, struct dma_iova_state *state,
 int dma_iova_sync(struct device *dev, struct dma_iova_state *state,
 		size_t offset, size_t size);
 int dma_iova_link(struct device *dev, struct dma_iova_state *state,
+		phys_addr_t phys, size_t offset, size_t size,
+		enum dma_data_direction dir, unsigned long attrs);
+int dma_iova_link_pgsized(struct device *dev, struct dma_iova_state *state,
 		phys_addr_t phys, size_t offset, size_t size,
 		enum dma_data_direction dir, unsigned long attrs);
 void dma_iova_unlink(struct device *dev, struct dma_iova_state *state,
@@ -387,6 +406,13 @@ static inline bool dma_iova_try_alloc(struct device *dev,
 		struct dma_iova_state *state, phys_addr_t phys, size_t size)
 {
 	return false;
+}
+
+static inline int dma_iova_alloc_pgsized(struct device *dev,
+		struct dma_iova_state *state, phys_addr_t phys, size_t size,
+		size_t min_pgsize)
+{
+	return -EOPNOTSUPP;
 }
 static inline void dma_iova_free(struct device *dev,
 		struct dma_iova_state *state)
@@ -403,6 +429,13 @@ static inline int dma_iova_sync(struct device *dev,
 	return -EOPNOTSUPP;
 }
 static inline int dma_iova_link(struct device *dev,
+		struct dma_iova_state *state, phys_addr_t phys, size_t offset,
+		size_t size, enum dma_data_direction dir, unsigned long attrs)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int dma_iova_link_pgsized(struct device *dev,
 		struct dma_iova_state *state, phys_addr_t phys, size_t offset,
 		size_t size, enum dma_data_direction dir, unsigned long attrs)
 {

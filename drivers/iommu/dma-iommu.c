@@ -1828,6 +1828,93 @@ bool dma_iova_try_alloc(struct device *dev, struct dma_iova_state *state,
 }
 EXPORT_SYMBOL_GPL(dma_iova_try_alloc);
 
+int iommu_dma_iova_validate_pgsize(unsigned long pgsize_bitmap,
+		phys_addr_t phys, size_t size, size_t min_pgsize)
+{
+	if (!min_pgsize || !is_power_of_2(min_pgsize) || !size ||
+	    ((u64)size & DMA_IOVA_USE_SWIOTLB))
+		return -EINVAL;
+	if (!(pgsize_bitmap & min_pgsize))
+		return -EOPNOTSUPP;
+	if (!IS_ALIGNED(phys, min_pgsize) || !IS_ALIGNED(size, min_pgsize))
+		return -EINVAL;
+	return 0;
+}
+
+int iommu_dma_iova_validate_link(dma_addr_t addr, phys_addr_t phys,
+		size_t size, size_t min_pgsize)
+{
+	if (!min_pgsize || !is_power_of_2(min_pgsize) || !size)
+		return -EINVAL;
+	if (!IS_ALIGNED(addr, min_pgsize) ||
+	    !IS_ALIGNED(phys, min_pgsize) ||
+	    !IS_ALIGNED(size, min_pgsize))
+		return -EINVAL;
+	return 0;
+}
+
+/**
+ * dma_iova_alloc_pgsized - allocate IOVA space with a minimum leaf-size contract
+ * @dev: Device to allocate the IOVA space for
+ * @state: IOVA state
+ * @phys: Physical address of the first range to be linked
+ * @size: IOVA size
+ * @min_pgsize: Minimum IOMMU leaf size required for every linked range
+ *
+ * Unlike dma_iova_try_alloc(), this is a strict, errno-returning interface.
+ * It succeeds only for a translating DMA-IOMMU domain which supports
+ * @min_pgsize and for an allocation naturally aligned to @min_pgsize.
+ */
+int dma_iova_alloc_pgsized(struct device *dev, struct dma_iova_state *state,
+		phys_addr_t phys, size_t size, size_t min_pgsize)
+{
+	struct iommu_dma_cookie *cookie;
+	struct iommu_domain *domain;
+	struct iova_domain *iovad;
+	size_t alloc_size, iova_off;
+	dma_addr_t addr;
+	int ret;
+
+	memset(state, 0, sizeof(*state));
+	ret = iommu_dma_iova_validate_pgsize(~0UL, phys, size, min_pgsize);
+	if (ret)
+		return -EINVAL;
+	if (!use_dma_iommu(dev))
+		return -ENODEV;
+
+	domain = iommu_get_dma_domain(dev);
+	ret = iommu_dma_iova_validate_pgsize(domain->pgsize_bitmap, phys,
+			size, min_pgsize);
+	if (ret)
+		return ret;
+
+	ret = 0;
+	if (static_branch_unlikely(&iommu_deferred_attach_enabled))
+		ret = iommu_deferred_attach(dev, iommu_get_domain_for_dev(dev));
+	if (ret)
+		return ret;
+
+	cookie = domain->iova_cookie;
+	iovad = &cookie->iovad;
+	iova_off = iova_offset(iovad, phys);
+	if (WARN_ON_ONCE(iova_off))
+		return -EINVAL;
+	alloc_size = iova_align(iovad, size);
+	addr = iommu_dma_alloc_iova(domain, alloc_size, dma_get_mask(dev), dev);
+	if (!addr)
+		return -ENOSPC;
+	if (!IS_ALIGNED(addr, min_pgsize)) {
+		iommu_dma_free_iova(domain, addr, alloc_size, NULL);
+		return -ERANGE;
+	}
+
+	state->addr = addr;
+	state->__size = size;
+	state->__min_pgsize = min_pgsize;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(dma_iova_alloc_pgsized);
+
 /**
  * dma_iova_free - Free an IOVA space
  * @dev: Device to free the IOVA space for
@@ -1855,16 +1942,28 @@ EXPORT_SYMBOL_GPL(dma_iova_free);
 
 static int __dma_iova_link(struct device *dev, dma_addr_t addr,
 		phys_addr_t phys, size_t size, enum dma_data_direction dir,
-		unsigned long attrs)
+		unsigned long attrs, size_t min_pgsize)
 {
 	bool coherent = dev_is_dma_coherent(dev);
 	int prot = dma_info_to_prot(dir, coherent, attrs);
+	int ret;
 
 	if (!coherent && !(attrs & (DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_MMIO)))
 		arch_sync_dma_for_device(phys, size, dir);
 
-	return iommu_map_nosync(iommu_get_dma_domain(dev), addr, phys, size,
-			prot, GFP_ATOMIC);
+	if (min_pgsize)
+		ret = iommu_map_nosync_pgsized(iommu_get_dma_domain(dev), addr,
+				phys, size, min_pgsize, prot, GFP_ATOMIC);
+	else
+		ret = iommu_map_nosync(iommu_get_dma_domain(dev), addr, phys,
+				size, prot, GFP_ATOMIC);
+	/* Preserve the existing dma_iova_link() ownership semantics. */
+	if (ret && min_pgsize && !coherent &&
+	    !(attrs & (DMA_ATTR_SKIP_CPU_SYNC | DMA_ATTR_MMIO))) {
+		arch_sync_dma_for_cpu(phys, size, dir);
+		arch_sync_dma_flush();
+	}
+	return ret;
 }
 
 static int iommu_dma_iova_bounce_and_link(struct device *dev, dma_addr_t addr,
@@ -1883,7 +1982,7 @@ static int iommu_dma_iova_bounce_and_link(struct device *dev, dma_addr_t addr,
 
 	error = __dma_iova_link(dev, addr - iova_start_pad,
 			bounce_phys - iova_start_pad,
-			iova_align(iovad, bounce_len), dir, attrs);
+			iova_align(iovad, bounce_len), dir, attrs, 0);
 	if (error)
 		swiotlb_tbl_unmap_single(dev, bounce_phys, bounce_len, dir,
 				attrs);
@@ -1925,7 +2024,7 @@ static int iommu_dma_iova_link_swiotlb(struct device *dev,
 	size -= iova_end_pad;
 	if (size) {
 		error = __dma_iova_link(dev, addr + mapped, phys + mapped,
-				size, dir, attrs);
+				size, dir, attrs, 0);
 		if (error)
 			goto out_unmap;
 		mapped += size;
@@ -1973,6 +2072,10 @@ int dma_iova_link(struct device *dev, struct dma_iova_state *state,
 	struct iova_domain *iovad = &cookie->iovad;
 	size_t iova_start_pad = iova_offset(iovad, phys);
 
+	if (dma_iova_min_pgsize(state))
+		return dma_iova_link_pgsized(dev, state, phys, offset, size,
+				dir, attrs);
+
 	if (WARN_ON_ONCE(iova_start_pad && offset > 0))
 		return -EIO;
 
@@ -1999,9 +2102,48 @@ int dma_iova_link(struct device *dev, struct dma_iova_state *state,
 
 	return __dma_iova_link(dev, state->addr + offset - iova_start_pad,
 			phys - iova_start_pad,
-			iova_align(iovad, size + iova_start_pad), dir, attrs);
+			iova_align(iovad, size + iova_start_pad), dir, attrs, 0);
 }
 EXPORT_SYMBOL_GPL(dma_iova_link);
+
+/**
+ * dma_iova_link_pgsized - link a range using a strict minimum leaf size
+ * @dev: DMA device
+ * @state: IOVA state allocated by dma_iova_alloc_pgsized()
+ * @phys: Physical address to link
+ * @offset: Offset into the IOVA state
+ * @size: Size of the buffer
+ * @dir: DMA direction
+ * @attrs: Attributes of mapping properties
+ *
+ * A successful call guarantees that the installed IOMMU leaves are no
+ * smaller than dma_iova_min_pgsize(@state). No SWIOTLB bounce mapping is
+ * permitted to weaken that guarantee.
+ */
+int dma_iova_link_pgsized(struct device *dev, struct dma_iova_state *state,
+		phys_addr_t phys, size_t offset, size_t size,
+		enum dma_data_direction dir, unsigned long attrs)
+{
+	size_t end, min_pgsize = dma_iova_min_pgsize(state);
+	dma_addr_t addr;
+
+	if (!min_pgsize || !dma_use_iova(state) || !size)
+		return -EINVAL;
+	if (check_add_overflow(offset, size, &end) ||
+	    end > dma_iova_size(state))
+		return -EINVAL;
+	if (check_add_overflow(state->addr, (dma_addr_t)offset, &addr))
+		return -EOVERFLOW;
+	if (iommu_dma_iova_validate_link(addr, phys, size, min_pgsize))
+		return -EINVAL;
+	if (state->__size & DMA_IOVA_USE_SWIOTLB)
+		return -EOPNOTSUPP;
+	if (!dev_is_dma_coherent(dev) && (attrs & DMA_ATTR_REQUIRE_COHERENT))
+		return -EOPNOTSUPP;
+
+	return __dma_iova_link(dev, addr, phys, size, dir, attrs, min_pgsize);
+}
+EXPORT_SYMBOL_GPL(dma_iova_link_pgsized);
 
 /**
  * dma_iova_sync - Sync IOTLB

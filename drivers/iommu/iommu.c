@@ -2556,7 +2556,7 @@ phys_addr_t iommu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)
 }
 EXPORT_SYMBOL_GPL(iommu_iova_to_phys);
 
-static size_t iommu_pgsize(struct iommu_domain *domain, unsigned long iova,
+static size_t iommu_pgsize(unsigned long pgsize_bitmap, unsigned long iova,
 			   phys_addr_t paddr, size_t size, size_t *count)
 {
 	unsigned int pgsize_idx, pgsize_idx_next;
@@ -2566,7 +2566,7 @@ static size_t iommu_pgsize(struct iommu_domain *domain, unsigned long iova,
 	unsigned long addr_merge = paddr | iova;
 
 	/* Page sizes supported by the hardware and small enough for @size */
-	pgsizes = domain->pgsize_bitmap & GENMASK(__fls(size), 0);
+	pgsizes = pgsize_bitmap & GENMASK(__fls(size), 0);
 
 	/* Constrain the page sizes further based on the maximum alignment */
 	if (likely(addr_merge))
@@ -2582,7 +2582,7 @@ static size_t iommu_pgsize(struct iommu_domain *domain, unsigned long iova,
 		return pgsize;
 
 	/* Find the next biggest support page size, if it exists */
-	pgsizes = domain->pgsize_bitmap & ~GENMASK(pgsize_idx, 0);
+	pgsizes = pgsize_bitmap & ~GENMASK(pgsize_idx, 0);
 	if (!pgsizes)
 		goto out_set_count;
 
@@ -2615,17 +2615,18 @@ out_set_count:
 static int __iommu_map_domain_pgtbl(struct iommu_domain *domain,
 				    unsigned long iova, phys_addr_t paddr,
 				    size_t size, int prot, gfp_t gfp,
+				    unsigned long pgsize_bitmap,
 				    size_t *mapped)
 {
 	const struct iommu_domain_ops *ops = domain->ops;
-	unsigned int min_pagesz;
+	unsigned long min_pagesz;
 	int ret = 0;
 
 	if (WARN_ON(!ops->map_pages))
 		return -ENODEV;
 
 	/* find out the minimum page size supported */
-	min_pagesz = 1 << __ffs(domain->pgsize_bitmap);
+	min_pagesz = BIT(__ffs(pgsize_bitmap));
 
 	/*
 	 * both the virtual address and the physical one, as well as
@@ -2633,7 +2634,7 @@ static int __iommu_map_domain_pgtbl(struct iommu_domain *domain,
 	 * size of the smallest page supported by the hardware
 	 */
 	if (!IS_ALIGNED(iova | paddr | size, min_pagesz)) {
-		pr_err("unaligned: iova 0x%lx pa %pa size 0x%zx min_pagesz 0x%x\n",
+		pr_err("unaligned: iova 0x%lx pa %pa size 0x%zx min_pagesz 0x%lx\n",
 		       iova, &paddr, size, min_pagesz);
 		return -EINVAL;
 	}
@@ -2643,12 +2644,21 @@ static int __iommu_map_domain_pgtbl(struct iommu_domain *domain,
 	while (size) {
 		size_t pgsize, count, op_mapped = 0;
 
-		pgsize = iommu_pgsize(domain, iova, paddr, size, &count);
+		pgsize = iommu_pgsize(pgsize_bitmap, iova, paddr, size, &count);
 
 		pr_debug("mapping: iova 0x%lx pa %pa pgsize 0x%zx count %zu\n",
 			 iova, &paddr, pgsize, count);
 		ret = ops->map_pages(domain, iova, paddr, pgsize, count, prot,
 				     gfp, &op_mapped);
+		/*
+		 * Report only the prefix the driver says it installed.  A nonzero
+		 * status marks a partial mapping which the caller will unwind.
+		 */
+		if (trace_iommu_map_leaf_enabled() && op_mapped) {
+			WARN_ON_ONCE(!IS_ALIGNED(op_mapped, pgsize));
+			trace_iommu_map_leaf(domain, iova, paddr, pgsize,
+					     op_mapped, ret);
+		}
 		/*
 		 * Some pages may have been mapped, even if an error occurred,
 		 * so we should account for those so they can be unmapped.
@@ -2673,8 +2683,9 @@ int iommu_sync_map(struct iommu_domain *domain, unsigned long iova, size_t size)
 	return ops->iotlb_sync_map(domain, iova, size);
 }
 
-int iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
-		phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
+static int __iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
+			      phys_addr_t paddr, size_t size, int prot,
+			      gfp_t gfp, unsigned long pgsize_bitmap)
 {
 	struct pt_iommu *pt = iommupt_from_domain(domain);
 	size_t mapped = 0;
@@ -2684,17 +2695,18 @@ int iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
 
 	/* Discourage passing strange GFP flags or illegal domains */
 	if (WARN_ON_ONCE(!(domain->type & __IOMMU_DOMAIN_PAGING) ||
-			 !domain->pgsize_bitmap ||
+			 !domain->pgsize_bitmap || !pgsize_bitmap ||
+			 (pgsize_bitmap & ~domain->pgsize_bitmap) ||
 			 (gfp & (__GFP_COMP | __GFP_DMA | __GFP_DMA32 |
 				 __GFP_HIGHMEM))))
 		return -EINVAL;
 
 	if (pt)
 		ret = pt->ops->map_range(pt, iova, paddr, size, prot, gfp,
-					 &mapped);
+					 pgsize_bitmap, &mapped);
 	else
 		ret = __iommu_map_domain_pgtbl(domain, iova, paddr, size, prot,
-					       gfp, &mapped);
+					       gfp, pgsize_bitmap, &mapped);
 
 	trace_map(iova, paddr, mapped);
 	iommu_debug_map(domain, paddr, mapped);
@@ -2703,6 +2715,34 @@ int iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
 		return ret;
 	}
 	return 0;
+}
+
+int iommu_map_nosync(struct iommu_domain *domain, unsigned long iova,
+		     phys_addr_t paddr, size_t size, int prot, gfp_t gfp)
+{
+	return __iommu_map_nosync(domain, iova, paddr, size, prot, gfp,
+				  domain->pgsize_bitmap);
+}
+
+int iommu_map_nosync_pgsized(struct iommu_domain *domain, unsigned long iova,
+			     phys_addr_t paddr, size_t size, size_t min_pgsize,
+			     int prot, gfp_t gfp)
+{
+	unsigned long pgsize_bitmap;
+
+	if (!domain || !size || !is_power_of_2(min_pgsize))
+		return -EINVAL;
+	if (!(domain->pgsize_bitmap & min_pgsize))
+		return -EOPNOTSUPP;
+	if (!IS_ALIGNED(iova, min_pgsize) ||
+	    !IS_ALIGNED(paddr, min_pgsize) ||
+	    !IS_ALIGNED(size, min_pgsize))
+		return -EINVAL;
+
+	pgsize_bitmap = domain->pgsize_bitmap &
+		GENMASK(BITS_PER_LONG - 1, ilog2(min_pgsize));
+	return __iommu_map_nosync(domain, iova, paddr, size, prot, gfp,
+				  pgsize_bitmap);
 }
 
 int iommu_map(struct iommu_domain *domain, unsigned long iova,
@@ -2756,7 +2796,8 @@ __iommu_unmap_domain_pgtbl(struct iommu_domain *domain, unsigned long iova,
 	while (unmapped < size) {
 		size_t pgsize, count;
 
-		pgsize = iommu_pgsize(domain, iova, iova, size - unmapped, &count);
+		pgsize = iommu_pgsize(domain->pgsize_bitmap, iova, iova,
+				      size - unmapped, &count);
 		unmapped_page = ops->unmap_pages(domain, iova, pgsize, count, iotlb_gather);
 		if (!unmapped_page)
 			break;
