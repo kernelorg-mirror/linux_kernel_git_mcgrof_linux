@@ -1,0 +1,65 @@
+DMA-IOVA page-size stress selftest
+==================================
+
+This test exercises the DMA-IOVA allocation/link/sync/destroy API against a
+real, driver-bound PCI function without changing its driver binding, DMA mask,
+or device state, and without issuing any device command.  The module accepts
+only coherent devices in a translating DMA-IOMMU domain.  It owns every folio
+that it maps and destroys every successfully linked prefix before freeing it.
+
+Use a quiet, dedicated test device: the target driver remains active and the
+test intentionally perturbs its domain's IOVA allocator and IOTLB.  Run as
+root, and identify the function explicitly:
+
+  ./dma_iova_pgsize.sh --bdf 0000:03:00.0 --api current --order 9
+  ./dma_iova_pgsize.sh --bdf 0000:03:00.0 --api strict --order 9
+
+The immediate mode maps and destroys each mapping.  Churn keeps a bounded live
+set and replaces a deterministic pseudo-random member.  Ramp retains mappings
+until max-live, iterations, or the byte cap is reached.  The hard limits are
+1 GiB live mapped bytes, 4096 live mappings, 4096 folios per mapping, and
+100000 iterations.  Folio allocations use bounded, non-retrying reclaim.
+
+Strict negative checks are safe and issue no device command:
+
+  ./dma_iova_pgsize.sh --bdf 0000:03:00.0 --api strict \
+          --negative misaligned --order 9
+  ./dma_iova_pgsize.sh --bdf 0000:03:00.0 --api strict \
+          --negative unsupported
+
+The output is one JSON object.  For perf, configure once and place only the
+synchronous trigger inside the measured interval:
+
+  ./dma_iova_pgsize.sh --bdf 0000:03:00.0 --api strict --order 9 \
+          --iterations 1000 --configure-only
+  perf stat -x, -r 10 -e task-clock,cycles,instructions,branches,\
+branch-misses,cache-misses -- ./dma_iova_pgsize.sh --run-only
+  modprobe -r dma_iova_pgsize_selftest
+
+The harness records the source-tree HEAD as kernel_commit when it is run from
+a Git checkout.  Use --kernel-commit with the exact 40-character object name
+when running an installed copy.
+
+For IOMMU leaf-size attribution, record the leaf tracepoint around --run-only,
+then filter the trace using domain_token, iova_start, and iova_size from the
+result JSON:
+
+  perf record -a -e iommu:iommu_map_leaf -- \
+          ./dma_iova_pgsize.sh --run-only
+  perf script > leaf-events.txt
+  ./leaf_hist.py --domain <domain_token> \
+	  --iova-start <base> --iova-size <len> \
+	  --expected-mapped-bytes <expected_leaf_mapped_bytes> \
+          --format json leaf-events.txt
+
+The domain token is the stable, hashed ``%p`` representation used by the
+tracepoint for that boot.  The parser requires an exact match so events from an
+overlapping IOVA range in another domain cannot contaminate the histogram.  By
+default leaf_hist.py excludes nonzero-status partial/error records.  Add
+--include-nonzero-status when diagnosing unwind paths.  leaf_hist_test.py is
+the self-contained parser regression test run by kselftest.  Leaf records are
+emitted when entries are installed, before the complete map transaction or its
+final sync is known to have succeeded.  Always use expected-mapped-bytes for
+geometry claims so a rolled-back prefix or incomplete capture fails closed.
+Keep tracepoint collection separate from timed CPU comparisons because the
+number of emitted records can differ substantially between mapping modes.

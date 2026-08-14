@@ -158,6 +158,28 @@ config IOMMU_DMA
 	select NEED_SG_DMA_LENGTH
 	select NEED_SG_DMA_FLAGS if SWIOTLB
 
+config IOMMU_DMA_KUNIT_TEST
+	bool "KUnit tests for DMA-IOMMU IOVA mappings" if !KUNIT_ALL_TESTS
+	depends on KUNIT && IOMMU_DMA
+	default KUNIT_ALL_TESTS
+	help
+	  Test minimum-page-size DMA-IOVA argument validation and the IOMMU
+	  core mapping contract.  The tests cover unsupported page sizes,
+	  invalid physical and IOVA alignment, filtered leaf selection,
+	  partial-map cleanup, and unchanged legacy small-leaf mappings.
+	  Say N unless you are developing or testing the DMA-IOMMU code.
+
+config DMA_IOVA_PGSIZE_SELFTEST
+	tristate "DMA-IOVA page-size stress selftest"
+	depends on PCI && IOMMU_DMA && SYSFS
+	help
+	  Build a test module which maps test-owned folios through the DMA-IOVA
+	  API of an already-bound PCI device.  It never submits device commands,
+	  changes the DMA mask, or changes the device's driver binding.
+
+	  This stress test consumes bounded IOVA space and system memory.  Say N
+	  unless you are actively testing DMA-IOMMU mapping page sizes.
+
 # Shared Virtual Addressing
 config IOMMU_SVA
 	select IOMMU_MM_DATA
