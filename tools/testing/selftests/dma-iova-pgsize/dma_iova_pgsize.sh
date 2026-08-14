@@ -122,11 +122,12 @@ if [ "$RUN_ONLY" -eq 0 ]; then
 	fi
 	[ -d "$PARAM_DIR" ] || die "module parameter directory is absent"
 
-	printf '%s\n' "$BDF" > "$PARAM_DIR/bdf" || die "cannot set bdf"
-	printf '%s\n' "$API" > "$PARAM_DIR/api" || die "cannot set api"
-	printf '%s\n' "$MODE" > "$PARAM_DIR/mode" || die "cannot set mode"
-	printf '%s\n' "$NEGATIVE" > "$PARAM_DIR/negative" || die "cannot set negative"
-	printf '%s\n' "$KERNEL_COMMIT" > "$PARAM_DIR/kernel_commit" || \
+	# module_param_string() keeps a trailing newline written through sysfs.
+	printf '%s' "$BDF" > "$PARAM_DIR/bdf" || die "cannot set bdf"
+	printf '%s' "$API" > "$PARAM_DIR/api" || die "cannot set api"
+	printf '%s' "$MODE" > "$PARAM_DIR/mode" || die "cannot set mode"
+	printf '%s' "$NEGATIVE" > "$PARAM_DIR/negative" || die "cannot set negative"
+	printf '%s' "$KERNEL_COMMIT" > "$PARAM_DIR/kernel_commit" || \
 		die "cannot set kernel_commit"
 	printf '%s\n' "$ORDER" > "$PARAM_DIR/order" || die "cannot set order"
 	printf '%s\n' "$FOLIOS_PER_MAPPING" > "$PARAM_DIR/folios_per_mapping" || \
