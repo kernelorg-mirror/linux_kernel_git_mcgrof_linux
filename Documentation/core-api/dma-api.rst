@@ -493,6 +493,29 @@ false this API can't be used for the given device and the normal streaming
 DMA mapping API should be used.  The ``struct dma_iova_state`` is allocated
 by the driver and must be kept around until unmap time.
 
+Callers which require an explicit IOMMU translation granularity may instead
+use::
+
+    int dma_iova_alloc_pgsized(struct device *dev,
+		struct dma_iova_state *state, phys_addr_t phys,
+		size_t size, size_t min_pgsize);
+
+This strict form requires a translating DMA-IOMMU domain, a non-zero
+power-of-two ``min_pgsize`` supported by that domain, and physical address and
+length alignment to ``min_pgsize``.  The allocated IOVA is also guaranteed to
+have that alignment.  It returns ``-ENODEV`` when no translating DMA-IOMMU is
+present, ``-EOPNOTSUPP`` when the requested page size is unavailable,
+``-EINVAL`` for invalid or misaligned input, ``-ENOSPC`` when no IOVA can be
+allocated, and ``-ERANGE`` if an allocation cannot satisfy the alignment
+contract.  It never changes the fallback semantics of
+``dma_iova_try_alloc()``.
+
+The requested value is available through::
+
+    size_t dma_iova_min_pgsize(const struct dma_iova_state *state);
+
+which returns zero for an ordinary IOVA state.
+
 ::
 
     static inline bool dma_use_iova(struct dma_iova_state *state)
@@ -511,6 +534,25 @@ but the first call to dma_iova_link for a given state must be aligned
 to the DMA merge boundary returned by ``dma_get_merge_boundary())``, and
 the size of all but the last range must be aligned to the DMA merge boundary
 as well.
+
+For a state returned by ``dma_iova_alloc_pgsized()``, link ranges with::
+
+    int dma_iova_link_pgsized(struct device *dev,
+		struct dma_iova_state *state, phys_addr_t phys,
+		size_t offset, size_t size, enum dma_data_direction dir,
+		unsigned long attrs);
+
+The IOVA, physical address, offset, and length must preserve the allocation's
+minimum-page-size alignment.  A successful call guarantees that every IOMMU
+leaf installed for the range is at least that size; a larger supported leaf
+may be used.  A SWIOTLB bounce mapping is never substituted for the strict
+mapping.  Calling ordinary ``dma_iova_link()`` on a strict state preserves the
+same guarantee.
+
+This interface is intended for persistent mappings whose consumers explicitly
+trade mapping success rate for greater IOTLB reach.  It guarantees mapping
+geometry, not performance.  In particular, an implementation may already
+choose the same large leaves for an ordinary, suitably aligned mapping.
 
 ::
 

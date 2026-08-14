@@ -80,15 +80,39 @@ The pieces in this series
    per-controller ``/dev/ngXnY`` path premaps; the floating multipath head
    allocates an ordinary buffer.
 
+Strict IOMMU leaf-size mode
+===========================
+
+``BLOCK_URING_CMD_ALLOC_IOBUF`` accepts
+``BLOCK_URING_CMD_ALLOC_IOBUF_F_STRICT_PGSIZE`` in
+``sqe->len``.  On a fixed per-controller NVMe namespace this asks
+the DMA-IOMMU layer to require a minimum leaf size equal to the pool folio
+size.  Registration fails rather than falling back unless the device has a
+translating IOMMU, the domain supports that page size, the IOVA and every
+folio are aligned, and every link and final IOTLB sync succeeds.  The mode is
+therefore an explicit guarantee for applications which accept a lower
+registration success rate in exchange for predictable IOMMU geometry.
+
+The default remains best effort.  It preserves the primary map-once benefit
+and may fall back to ordinary per-I/O DMA mapping when premapping is not
+available.  Strict mode is rejected on the NVMe multipath head because a
+persistent mapping belongs to one controller.
+
+The queue attribute ``iobuf_pool_premap_stats`` reports attempts, successes,
+best-effort fallbacks, categorized allocation and mapping failures, and total
+strict rejections.  These counters identify whether a registration actually
+obtained a retained mapping; successful registration alone is not proof of a
+best-effort premap.
+
 How the request reaches the mapping
 ===================================
 
-``io_uring_cmd_kbuf_priv()`` resolves the command's fixed buffer to the
-provider's ``release_data`` (the ``blk_iobuf_reg``);
-``blk_iobuf_fixed_buf_premap()`` returns the retained ``blk_dma_premap``
-when it is one of ours premapped to the device; and ``request.dma_premap``
-carries it into the request. The whole chain is ``req->buf_index ->
-imu->priv -> blk_iobuf_reg -> blk_dma_premap``.
+``blk_iobuf_fixed_buf_premap()`` resolves the command's fixed buffer through
+``io_uring_cmd_kbuf_priv()``, which returns ``release_data`` only after its
+release callback identifies the blk-iobuf provider.  The block helper then
+returns the retained ``blk_dma_premap`` when it is premapped to the device, and
+``request.dma_premap`` carries it into the request.  The whole chain is
+``req->buf_index -> typed imu->priv -> blk_iobuf_reg -> blk_dma_premap``.
 
 Correctness spots that must all agree
 =====================================
@@ -97,17 +121,18 @@ The premapped consumer is spread across the NVMe request path and several
 spots must be correct together:
 
 * **Set up the request.** In ``nvme_map_user_request()``, after importing
-  the fixed buffer, resolve it with ``io_uring_cmd_kbuf_priv()`` +
-  ``blk_iobuf_fixed_buf_premap(dma_dev)``; on a hit, point
+  the fixed buffer, resolve it with the provider-typed
+  ``blk_iobuf_fixed_buf_premap(dma_dev)`` helper; on a hit, point
   ``req->dma_premap`` at the retained mapping (which also splits the
   request at ``max_hw_premapped_sectors``).
 
 * **Feed the DMA iterator from the mapping.** The premapped branch of
-  ``blk_rq_dma_map_iter_start()`` emits the whole buffer as one contiguous
-  IOVA segment from ``blk_dma_premap.state`` rather than mapping. For the
-  whole-buffer case the segment starts at the mapping's base; an arbitrary
-  buffer offset needs the byte-offset bookkeeping this first version can
-  defer.
+  ``blk_rq_dma_map_iter_start()`` emits the request as one contiguous IOVA
+  segment from ``blk_dma_premap.state`` rather than mapping.  This version
+  accepts only a byte offset of zero and rejects ``NVME_URING_CMD_IO_VEC`` for
+  premapped buffers; both require geometry which the retained-mapping iterator
+  does not yet carry.  Ordinary dynamically mapped fixed buffers retain their
+  existing offset and vector support.
 
 * **Do not unmap what you did not map (critical).** A premapped request
   must free no DMA at completion. ``nvme_pci_prp_save_mapping()`` saves no
