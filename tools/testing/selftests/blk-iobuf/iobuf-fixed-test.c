@@ -947,6 +947,7 @@ static int validate_nvme_slots(struct io_uring *ring, int ngfd,
 			break;
 		}
 		(*validated)++;
+		ret = 0;
 	}
 	if (!ret && fsync(fd))
 		ret = -errno;
