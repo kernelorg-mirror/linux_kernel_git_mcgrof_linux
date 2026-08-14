@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
-"""Build an IOMMU leaf-size histogram from ``perf script`` output."""
+"""Build an IOMMU leaf-size histogram from kernel-formatted trace output."""
 
 import argparse
 import contextlib
@@ -165,7 +165,8 @@ def validate_expected_mapped_bytes(rows, expected_mapped_bytes):
 def parse_args(argv):
     parser = argparse.ArgumentParser(
         description=(
-            "filter iommu:iommu_map_leaf perf-script records by a half-open "
+            "filter kernel-formatted iommu:iommu_map_leaf records by a "
+            "half-open "
             "IOVA range and summarize their installed leaf sizes"
         )
     )
@@ -173,7 +174,7 @@ def parse_args(argv):
         "input",
         nargs="?",
         default="-",
-        help="perf script output (default: stdin)",
+        help="kernel-formatted trace output (default: stdin)",
     )
     parser.add_argument("--iova-start", required=True, type=auto_int)
     parser.add_argument(

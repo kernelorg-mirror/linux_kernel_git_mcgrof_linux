@@ -40,22 +40,50 @@ The harness records the source-tree HEAD as kernel_commit when it is run from
 a Git checkout.  Use --kernel-commit with the exact 40-character object name
 when running an installed copy.
 
-For IOMMU leaf-size attribution, record the leaf tracepoint around --run-only,
-then filter the trace using domain_token, iova_start, and iova_size from the
-result JSON:
+For IOMMU leaf-size attribution, take a bounded, kernel-formatted tracefs
+snapshot around --run-only.  The following sequence first disables collection,
+clears stale records, enables only the leaf event for the synchronous run, and
+disables collection before copying the snapshot.  It temporarily controls the
+global tracer, so use it only on the dedicated test system described above:
 
-  perf record -a -e iommu:iommu_map_leaf -- \
-          ./dma_iova_pgsize.sh --run-only
-  perf script > leaf-events.txt
+  tracefs=/sys/kernel/tracing
+  leaf_enable=$tracefs/events/iommu/iommu_map_leaf/enable
+  trace_stop()
+  {
+	  echo 0 > "$tracefs/tracing_on"
+	  echo 0 > "$leaf_enable"
+  }
+  trap trace_stop EXIT
+  trap 'exit 130' HUP INT TERM
+
+  trace_stop
+  : > "$tracefs/trace"
+  echo 1 > "$leaf_enable"
+  echo 1 > "$tracefs/tracing_on"
+  run_status=0
+  ./dma_iova_pgsize.sh --run-only > result.json || run_status=$?
+  trace_stop
+  cat "$tracefs/trace" > leaf-events.txt
+  trap - EXIT HUP INT TERM
+  test "$run_status" -eq 0
+
+Then filter leaf-events.txt using domain_token, iova_start, and iova_size from
+result.json:
+
   ./leaf_hist.py --domain <domain_token> \
 	  --iova-start <base> --iova-size <len> \
 	  --expected-mapped-bytes <expected_leaf_mapped_bytes> \
           --format json leaf-events.txt
 
-The domain token is the stable, hashed ``%p`` representation used by the
-tracepoint for that boot.  The parser requires an exact match so events from an
-overlapping IOVA range in another domain cannot contaminate the histogram.  By
-default leaf_hist.py excludes nonzero-status partial/error records.  Add
+The domain token is the stable, boot-local ``%p`` representation used by both
+the module JSON and the kernel's tracefs formatter.  Do not substitute a perf
+capture for this tracefs snapshot.  ``perf record`` records the raw domain
+pointer field and ``perf script`` renders it in userspace, so its domain text
+can differ from the kernel-formatted ``%p`` token reported by the module.  It
+therefore cannot be exact-domain-filtered with domain_token.  The parser
+requires an exact match so events from an overlapping IOVA range in another
+domain cannot contaminate the histogram.  By default leaf_hist.py excludes
+nonzero-status partial/error records.  Add
 --include-nonzero-status when diagnosing unwind paths.  leaf_hist_test.py is
 the self-contained parser regression test run by kselftest.  Leaf records are
 emitted when entries are installed, before the complete map transaction or its
