@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0
-CFLAGS += -Wall -Wextra -O2 -D_GNU_SOURCE $(KHDR_INCLUDES)
+CFLAGS += -Wall -Wextra -O2 $(KHDR_INCLUDES)
 LDLIBS += -luring
 
 TEST_GEN_PROGS := iobuf-fixed-test
