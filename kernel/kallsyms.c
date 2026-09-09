@@ -280,14 +280,15 @@ int kallsyms_on_each_match_symbol(int (*fn)(void *, unsigned long),
 	return ret;
 }
 
-static unsigned long get_symbol_pos(unsigned long addr,
-				    unsigned long *symbolsize,
-				    unsigned long *offset)
+/*
+ * Binary search the sorted kallsyms_offsets array for the position of the
+ * last symbol whose address is <= @addr. Returns 0 if every symbol lies
+ * above @addr; the caller is expected to have checked is_ksym_addr().
+ */
+unsigned long kallsyms_addr_pos_bsearch(unsigned long addr)
 {
-	unsigned long symbol_start = 0, symbol_end = 0;
-	unsigned long i, low, high, mid;
+	unsigned long low, high, mid;
 
-	/* Do a binary search on the sorted kallsyms_offsets array. */
 	low = 0;
 	high = kallsyms_num_syms;
 
@@ -298,6 +299,18 @@ static unsigned long get_symbol_pos(unsigned long addr,
 		else
 			high = mid;
 	}
+
+	return low;
+}
+
+static unsigned long get_symbol_pos(unsigned long addr,
+				    unsigned long *symbolsize,
+				    unsigned long *offset)
+{
+	unsigned long symbol_start = 0, symbol_end = 0;
+	unsigned long i, low;
+
+	low = kallsyms_addr_pos(addr);
 
 	/*
 	 * Search for the first aliased symbol. Aliased

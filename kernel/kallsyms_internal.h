@@ -15,4 +15,12 @@ extern const u16 kallsyms_token_index[];
 extern const unsigned int kallsyms_markers[];
 extern const u8 kallsyms_seqs_of_names[];
 
+unsigned long kallsyms_addr_pos_bsearch(unsigned long addr);
+
+/* Position of the last symbol whose address is <= @addr. */
+static inline unsigned long kallsyms_addr_pos(unsigned long addr)
+{
+	return kallsyms_addr_pos_bsearch(addr);
+}
+
 #endif // LINUX_KALLSYMS_INTERNAL_H_
