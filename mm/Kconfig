@@ -1438,6 +1438,19 @@ config LRU_GEN_WALKS_MMU
 config ARCH_SUPPORTS_PER_VMA_LOCK
        def_bool n
 
+config VMA_DIRECTORY
+	bool "Per-mm VMA directory for the lockless fault path"
+	depends on PER_VMA_LOCK && DEBUG_FS
+	select LIDX
+	default n
+	help
+	  Keep, for address spaces with many VMAs, a sorted snapshot of the
+	  VMAs with a predicted-position index, valid while the mmap lock
+	  sequence is unchanged, and answer the lockless page-fault VMA
+	  lookup from it instead of walking the Maple Tree. Rebuilt lazily
+	  after enough stale lookups. Counters in debugfs vma_dir. This is
+	  an experiment; say N.
+
 config PER_VMA_LOCK
 	def_bool y
 	depends on ARCH_SUPPORTS_PER_VMA_LOCK && MMU && SMP

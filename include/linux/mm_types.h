@@ -1216,6 +1216,12 @@ struct mm_struct {
 		atomic_long_t pgtables_bytes;	/* size of all page tables */
 #endif
 		int map_count;			/* number of VMAs */
+#ifdef CONFIG_VMA_DIRECTORY
+		struct vma_dir __rcu *vma_dir;	/* see linux/vma_dir.h */
+		unsigned int vma_dir_stale;
+		unsigned int vma_dir_skip;	/* rebuilds withheld */
+		unsigned long vma_dir_building;	/* one builder at a time */
+#endif
 
 		spinlock_t page_table_lock; /* Protects page tables and some
 					     * counters

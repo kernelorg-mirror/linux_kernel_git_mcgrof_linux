@@ -6,6 +6,7 @@
 #include <linux/cgroup.h>
 #include <linux/memcontrol.h>
 #include <linux/mmap_lock.h>
+#include <linux/vma_dir.h>
 #include <linux/mutex.h>
 #include <linux/percpu.h>
 #include <linux/rcupdate.h>
@@ -298,10 +299,14 @@ struct vm_area_struct *lock_vma_under_rcu(struct mm_struct *mm,
 {
 	MA_STATE(mas, &mm->mm_mt, address, address);
 	struct vm_area_struct *vma;
+	bool use_dir = IS_ENABLED(CONFIG_VMA_DIRECTORY);
 
+	vma_dir_maybe_rebuild(mm);
 retry:
 	rcu_read_lock();
-	vma = mas_walk(&mas);
+	vma = use_dir ? vma_dir_lookup(mm, address) : NULL;
+	if (!vma)
+		vma = mas_walk(&mas);
 	if (!vma) {
 		rcu_read_unlock();
 		goto inval;
@@ -314,6 +319,7 @@ retry:
 			count_vm_vma_lock_event(VMA_LOCK_MISS);
 			/* The area was replaced with another one */
 			mas_set(&mas, address);
+			use_dir = false;
 			goto retry;
 		}
 
