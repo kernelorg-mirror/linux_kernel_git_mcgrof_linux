@@ -151,10 +151,7 @@ static unsigned int get_symbol_offset(unsigned long pos)
 
 unsigned long kallsyms_sym_address(int idx)
 {
-	/* non-relocatable 32-bit kernels just embed the value directly */
-	if (!IS_ENABLED(CONFIG_64BIT) && !IS_ENABLED(CONFIG_RELOCATABLE))
-		return (u32)kallsyms_offsets[idx];
-	return (unsigned long)offset_to_ptr(kallsyms_offsets + idx);
+	return __kallsyms_sym_address(idx);
 }
 
 static unsigned int get_symbol_seq(int index)
@@ -294,7 +291,7 @@ unsigned long kallsyms_addr_pos_bsearch(unsigned long addr)
 
 	while (high - low > 1) {
 		mid = low + (high - low) / 2;
-		if (kallsyms_sym_address(mid) <= addr)
+		if (__kallsyms_sym_address(mid) <= addr)
 			low = mid;
 		else
 			high = mid;

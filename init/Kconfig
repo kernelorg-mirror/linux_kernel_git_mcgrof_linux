@@ -2072,6 +2072,21 @@ config KALLSYMS_SELFTEST
 	  "dmesg | grep kallsyms_selftest" to collect test results. "finish" is
 	  displayed in the last line, indicating that the test is complete.
 
+config KALLSYMS_LEARNED_INDEX
+	bool "Predicted-position search of the kallsyms address table"
+	depends on KALLSYMS && 64BIT
+	select LIDX
+	default n
+	help
+	  Replace the binary search that maps an address to its kallsyms
+	  table position with a search that first predicts the position from
+	  a small model of the sorted address table, then proves or corrects
+	  the prediction against the neighbouring entries. The model is
+	  1024 buckets, 24 KiB of static memory, built once at boot from the
+	  live table. Results are identical to the binary search; only the
+	  number of table entries read changes. kallsyms.learned_index=0
+	  keeps the binary search at boot.
+
 config KALLSYMS_ALL
 	bool "Include all symbols in kallsyms"
 	depends on DEBUG_KERNEL && KALLSYMS
