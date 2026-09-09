@@ -18186,6 +18186,7 @@ S:	Maintained
 T:	git git://git.kernel.org/pub/scm/linux/kernel/git/modules/linux.git modules-next
 F:	include/linux/kmod.h
 F:	include/linux/module*.h
+F:	kernel/kallsyms_lidx.c
 F:	kernel/module/
 F:	lib/test_kmod.c
 F:	lib/tests/module/
