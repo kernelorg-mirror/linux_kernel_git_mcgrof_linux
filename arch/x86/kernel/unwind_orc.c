@@ -9,6 +9,7 @@
 #include <asm/orc_types.h>
 #include <asm/orc_lookup.h>
 #include <asm/orc_header.h>
+#include <linux/slab.h>
 
 ORC_HEADER;
 
@@ -114,12 +115,77 @@ static struct orc_entry *__orc_find(int *ip_table, struct orc_entry *u_table,
 static struct orc_entry *orc_module_find(unsigned long ip)
 {
 	struct module *mod;
+	unsigned int *lookup, blk, start, stop;
 
 	mod = __module_address(ip);
 	if (!mod || !mod->arch.orc_unwind || !mod->arch.orc_unwind_ip)
 		return NULL;
+
+	/* Core text with a lookup table: search only the block's entries. */
+	lookup = READ_ONCE(mod->arch.orc_lookup);
+	if (lookup && ip >= mod->arch.orc_lookup_start &&
+	    ip < mod->arch.orc_lookup_stop &&
+	    ip >= orc_ip(mod->arch.orc_unwind_ip + mod->arch.orc_lookup_first)) {
+		blk = (ip - mod->arch.orc_lookup_start) / LOOKUP_BLOCK_SIZE;
+		start = mod->arch.orc_lookup_first + lookup[blk];
+		stop = mod->arch.orc_lookup_first + lookup[blk + 1] + 1;
+		return __orc_find(mod->arch.orc_unwind_ip + start,
+				  mod->arch.orc_unwind + start, stop - start, ip);
+	}
+
 	return __orc_find(mod->arch.orc_unwind_ip, mod->arch.orc_unwind,
 			  mod->arch.num_orcs, ip);
+}
+
+/*
+ * Build the module's block lookup table, the counterpart of orc_lookup
+ * for vmlinux: for each LOOKUP_BLOCK_SIZE block of the core text, the
+ * index of the last ORC entry at or below the block start. Init text is
+ * left to the binary search; it is freed after init anyway.
+ */
+static void orc_module_lookup_init(struct module *mod)
+{
+	unsigned long start = (unsigned long)mod->mem[MOD_TEXT].base;
+	unsigned long stop = start + mod->mem[MOD_TEXT].size;
+	int *ip_table = mod->arch.orc_unwind_ip;
+	unsigned int n = mod->arch.num_orcs, first, last, num_blocks, i;
+	unsigned int *lookup;
+	struct orc_entry *orc;
+
+	if (!n || !mod->mem[MOD_TEXT].size)
+		return;
+
+	/* The table is sorted, so the core-text entries are contiguous. */
+	for (first = 0; first < n && orc_ip(ip_table + first) < start; first++)
+		;
+	for (last = first; last < n && orc_ip(ip_table + last) < stop; last++)
+		;
+	if (last == first)
+		return;
+
+	num_blocks = (stop - start + LOOKUP_BLOCK_SIZE - 1) / LOOKUP_BLOCK_SIZE;
+	lookup = kmalloc_array(num_blocks + 1, sizeof(*lookup), GFP_KERNEL);
+	if (!lookup)
+		return;
+
+	for (i = 0; i < num_blocks; i++) {
+		orc = __orc_find(ip_table + first, mod->arch.orc_unwind + first,
+				 last - first, start + i * LOOKUP_BLOCK_SIZE);
+		lookup[i] = orc - (mod->arch.orc_unwind + first);
+	}
+	lookup[num_blocks] = last - first - 1;
+
+	mod->arch.orc_lookup_first = first;
+	mod->arch.orc_lookup_start = start;
+	mod->arch.orc_lookup_stop = stop;
+	/* The module runs, and so can be unwound, only after this returns. */
+	WRITE_ONCE(mod->arch.orc_lookup, lookup);
+}
+
+void unwind_module_cleanup(struct module *mod)
+{
+	kfree(mod->arch.orc_lookup);
+	mod->arch.orc_lookup = NULL;
 }
 #else
 static struct orc_entry *orc_module_find(unsigned long ip)
@@ -327,6 +393,7 @@ void unwind_module_init(struct module *mod, void *_orc_ip, size_t orc_ip_size,
 	mod->arch.orc_unwind_ip = orc_ip;
 	mod->arch.orc_unwind = orc;
 	mod->arch.num_orcs = num_entries;
+	orc_module_lookup_init(mod);
 }
 #endif
 

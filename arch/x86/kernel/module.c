@@ -320,4 +320,5 @@ void module_arch_cleanup(struct module *mod)
 {
 	alternatives_smp_module_del(mod);
 	its_free_mod(mod);
+	unwind_module_cleanup(mod);
 }

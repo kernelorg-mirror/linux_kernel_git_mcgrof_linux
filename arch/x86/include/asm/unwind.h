@@ -96,11 +96,13 @@ static inline struct pt_regs *unwind_get_entry_regs(struct unwind_state *state,
 void unwind_init(void);
 void unwind_module_init(struct module *mod, void *orc_ip, size_t orc_ip_size,
 			void *orc, size_t orc_size);
+void unwind_module_cleanup(struct module *mod);
 #else
 static inline void unwind_init(void) {}
 static inline
 void unwind_module_init(struct module *mod, void *orc_ip, size_t orc_ip_size,
 			void *orc, size_t orc_size) {}
+static inline void unwind_module_cleanup(struct module *mod) {}
 #endif
 
 static inline
