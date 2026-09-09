@@ -41,6 +41,12 @@ config PACKING_KUNIT_TEST
 
 	  When in doubt, say N.
 
+config LIDX
+	bool
+	help
+	  Builder for predicted-position indexes over sorted immutable
+	  integer tables, selected by its users.
+
 config BITREVERSE
 	tristate
 	select GENERIC_BITREVERSE if !HAVE_ARCH_BITREVERSE
