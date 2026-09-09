@@ -16,6 +16,10 @@
 #include <linux/sched/clock.h>
 #include <linux/kthread.h>
 #include <linux/vmalloc.h>
+#include <linux/prandom.h>
+#include <linux/sort.h>
+#include <linux/perf_event.h>
+#include <linux/preempt.h>
 
 #include "kallsyms_internal.h"
 #include "kallsyms_selftest.h"
@@ -407,6 +411,344 @@ failed:
 	return -ESRCH;
 }
 
+#ifdef CONFIG_KALLSYMS_LEARNED_INDEX
+/*
+ * The predicted-position search must return the position the binary
+ * search returns, for every symbol address, the addresses around it,
+ * addresses outside the table and with corrupted models. Then time both
+ * over the same query streams.
+ */
+#define LIDX_NQ		(1U << 17)
+#define LIDX_REPS	5
+
+struct lidx_stat {
+	u64 queries;
+	u64 mismatches;
+	u64 hits;
+	u64 windows;
+	u64 fallbacks;
+	u64 steps;
+};
+
+static struct lidx_bucket *lidx_test_buckets;
+static struct lidx_model lidx_test_model;
+static unsigned long *lidx_queries;
+static unsigned long lidx_sink;
+
+static void lidx_stat_query(struct lidx_stat *st, unsigned long addr)
+{
+	struct kallsyms_lidx_result r;
+	unsigned long pos, ref;
+
+	pos = kallsyms_lidx_test_search(&lidx_test_model, addr, &r);
+	ref = kallsyms_addr_pos_bsearch(addr);
+	st->queries++;
+	st->steps += r.steps;
+	if (pos != ref) {
+		if (st->mismatches < 4)
+			pr_info("lidx MISMATCH addr=%lx got=%lu want=%lu\n",
+				addr, pos, ref);
+		st->mismatches++;
+	}
+	switch (r.outcome) {
+	case KALLSYMS_LIDX_HIT:
+		st->hits++;
+		break;
+	case KALLSYMS_LIDX_WINDOW:
+		st->windows++;
+		break;
+	default:
+		st->fallbacks++;
+		break;
+	}
+}
+
+/* Every symbol, its neighbours, and addresses beyond both table ends. */
+static u64 lidx_check_all(const char *what)
+{
+	struct lidx_stat st = {};
+	unsigned long i, a, next, n = kallsyms_num_syms;
+	u64 steps100;
+
+	lidx_stat_query(&st, kallsyms_sym_address(0) - 1);
+	lidx_stat_query(&st, 0);
+	lidx_stat_query(&st, ULONG_MAX);
+	for (i = 0; i < n; i++) {
+		a = kallsyms_sym_address(i);
+		lidx_stat_query(&st, a);
+		if (i + 1 < n) {
+			next = kallsyms_sym_address(i + 1);
+			if (next > a + 1) {
+				lidx_stat_query(&st, a + 1);
+				lidx_stat_query(&st, next - 1);
+				lidx_stat_query(&st, a + (next - a) / 2);
+			}
+		} else {
+			lidx_stat_query(&st, a + 1);
+			lidx_stat_query(&st, a + 4096);
+		}
+	}
+	steps100 = div64_u64(st.steps * 100, st.queries);
+	pr_info("lidx %s max_err=%u queries=%llu mismatches=%llu hits=%llu windows=%llu fallbacks=%llu reads_per_query=%llu.%02llu\n",
+		what, lidx_test_model.max_err, st.queries, st.mismatches,
+		st.hits, st.windows, st.fallbacks, steps100 / 100,
+		steps100 % 100);
+	return st.mismatches;
+}
+
+enum lidx_stream { LIDX_KEYS, LIDX_RANDOM, LIDX_RANDKEY, LIDX_HOT, LIDX_NR_STREAMS };
+static const char * const lidx_stream_names[LIDX_NR_STREAMS] = {
+	"keys", "random", "randkey", "hot",
+};
+
+static void lidx_fill_queries(enum lidx_stream stream)
+{
+	struct rnd_state rnd;
+	unsigned long n = kallsyms_num_syms;
+	unsigned long base = kallsyms_sym_address(0);
+	unsigned long span = kallsyms_sym_address(n - 1) - base;
+	unsigned long i;
+	u64 r;
+
+	prandom_seed_state(&rnd, 0x6c696478);
+	for (i = 0; i < LIDX_NQ; i++) {
+		switch (stream) {
+		case LIDX_KEYS:
+			lidx_queries[i] = kallsyms_sym_address(i % n);
+			break;
+		case LIDX_RANDOM:
+			r = ((u64)prandom_u32_state(&rnd) << 32) | prandom_u32_state(&rnd);
+			lidx_queries[i] = base + (span ? r % (span + 1) : 0);
+			break;
+		case LIDX_RANDKEY:
+			lidx_queries[i] = kallsyms_sym_address(prandom_u32_state(&rnd) % n);
+			break;
+		default:
+			lidx_queries[i] = kallsyms_sym_address(n / 2) + 3;
+			break;
+		}
+	}
+}
+
+static int lidx_cmp_u64(const void *a, const void *b)
+{
+	const u64 *x = a, *y = b;
+
+	return *x < *y ? -1 : *x > *y;
+}
+
+/* Time the stock binary search and the production entry point. */
+static void lidx_time(enum lidx_stream stream, bool learned)
+{
+	u64 t[LIDX_REPS], t0, ns100;
+	unsigned long i, sink = 0;
+	int rep;
+
+	for (rep = 0; rep < LIDX_REPS; rep++) {
+		t0 = sched_clock();
+		if (learned) {
+			for (i = 0; i < LIDX_NQ; i++)
+				sink += kallsyms_addr_pos(lidx_queries[i]);
+		} else {
+			for (i = 0; i < LIDX_NQ; i++)
+				sink += kallsyms_addr_pos_bsearch(lidx_queries[i]);
+		}
+		t[rep] = sched_clock() - t0;
+		cond_resched();
+	}
+	lidx_sink += sink;
+	sort(t, LIDX_REPS, sizeof(t[0]), lidx_cmp_u64, NULL);
+	ns100 = div64_u64(t[LIDX_REPS / 2] * 100, LIDX_NQ);
+	pr_info("lidx time search=%s stream=%s queries=%u reps=%d ns_per_query_median=%llu.%02llu ns_per_query_min=%llu.%02llu\n",
+		learned ? "kallsyms_addr_pos" : "bsearch",
+		lidx_stream_names[stream], LIDX_NQ, LIDX_REPS,
+		ns100 / 100, ns100 % 100,
+		div64_u64(t[0] * 100, LIDX_NQ) / 100,
+		div64_u64(t[0] * 100, LIDX_NQ) % 100);
+}
+
+/* Deliberately wrong models must still return the right positions. */
+static u64 lidx_check_corrupt(void)
+{
+	struct lidx_bucket *b = lidx_test_buckets;
+	struct rnd_state rnd;
+	unsigned int i, mode;
+	u64 bad = 0;
+	static const char * const modes[] = {
+		"slope0", "slopemax", "iceptmax", "iceptmin", "err0", "errmax",
+		"garbage",
+	};
+
+	prandom_seed_state(&rnd, 0xbadc0de);
+	for (mode = 0; mode < ARRAY_SIZE(modes); mode++) {
+		if (kallsyms_lidx_build(&lidx_test_model, lidx_test_buckets))
+			return 1;
+		for (i = 0; i < KALLSYMS_LIDX_BUCKETS; i++) {
+			switch (mode) {
+			case 0:
+				b[i].slope = 0;
+				break;
+			case 1:
+				b[i].slope = U64_MAX;
+				break;
+			case 2:
+				b[i].icept = S32_MAX;
+				break;
+			case 3:
+				b[i].icept = S32_MIN;
+				break;
+			case 4:
+				b[i].err = 0;
+				break;
+			case 5:
+				b[i].err = U32_MAX;
+				break;
+			default:
+				b[i].slope = ((u64)prandom_u32_state(&rnd) << 32) |
+					     prandom_u32_state(&rnd);
+				b[i].icept = prandom_u32_state(&rnd);
+				b[i].err = prandom_u32_state(&rnd) & 0xff;
+				break;
+			}
+		}
+		bad += lidx_check_all(modes[mode]);
+	}
+	return bad;
+}
+
+/*
+ * NMI context: address lookups run from oops and perf sampling paths, so
+ * the search must work there too. Program a cycle counter to overflow on
+ * this CPU and look up precomputed addresses from its handler, which runs
+ * in NMI context on architectures whose PMU interrupt is an NMI.
+ */
+#define LIDX_NMI_ADDRS	64
+
+struct lidx_nmi {
+	unsigned long addrs[LIDX_NMI_ADDRS];
+	unsigned long want[LIDX_NMI_ADDRS];
+	atomic_t calls;
+	atomic_t nmi;
+	atomic_t mismatches;
+};
+
+static struct lidx_nmi lidx_nmi;
+
+static void lidx_nmi_handler(struct perf_event *event,
+			     struct perf_sample_data *data,
+			     struct pt_regs *regs)
+{
+	unsigned int i = atomic_inc_return(&lidx_nmi.calls) % LIDX_NMI_ADDRS;
+
+	if (in_nmi())
+		atomic_inc(&lidx_nmi.nmi);
+	if (kallsyms_addr_pos(lidx_nmi.addrs[i]) != lidx_nmi.want[i])
+		atomic_inc(&lidx_nmi.mismatches);
+}
+
+static u64 lidx_check_nmi(void)
+{
+	struct perf_event_attr attr = {
+		.type = PERF_TYPE_HARDWARE,
+		.config = PERF_COUNT_HW_CPU_CYCLES,
+		.size = sizeof(attr),
+		.sample_period = 200000,
+		.exclude_user = 1,
+	};
+	struct perf_event *event;
+	struct rnd_state rnd;
+	unsigned long i, n = kallsyms_num_syms, sink = 0;
+	u64 deadline;
+
+	prandom_seed_state(&rnd, 0x6e6d69);
+	for (i = 0; i < LIDX_NMI_ADDRS; i++) {
+		lidx_nmi.addrs[i] = kallsyms_sym_address(prandom_u32_state(&rnd) % n) + (i & 3);
+		lidx_nmi.want[i] = kallsyms_addr_pos_bsearch(lidx_nmi.addrs[i]);
+	}
+	atomic_set(&lidx_nmi.calls, 0);
+	atomic_set(&lidx_nmi.nmi, 0);
+	atomic_set(&lidx_nmi.mismatches, 0);
+
+	event = perf_event_create_kernel_counter(&attr, raw_smp_processor_id(),
+						 NULL, lidx_nmi_handler, NULL);
+	if (IS_ERR(event)) {
+		pr_info("lidx nmi skipped: no cycle counter (%ld)\n",
+			PTR_ERR(event));
+		return 0;
+	}
+	deadline = sched_clock() + 200 * NSEC_PER_MSEC;
+	while (sched_clock() < deadline && atomic_read(&lidx_nmi.calls) < 4096) {
+		for (i = 0; i < LIDX_NQ; i++)
+			sink += kallsyms_addr_pos(lidx_queries[i]);
+	}
+	perf_event_release_kernel(event);
+	lidx_sink += sink;
+	pr_info("lidx nmi handler_calls=%d in_nmi=%d mismatches=%d\n",
+		atomic_read(&lidx_nmi.calls), atomic_read(&lidx_nmi.nmi),
+		atomic_read(&lidx_nmi.mismatches));
+	return atomic_read(&lidx_nmi.mismatches);
+}
+
+static int test_kallsyms_learned_index(void)
+{
+	struct lidx_stat st = {};
+	unsigned long i, n = kallsyms_num_syms;
+	enum lidx_stream stream;
+	u64 bad = 0;
+	int ret;
+
+	lidx_test_buckets = vmalloc_array(KALLSYMS_LIDX_BUCKETS + 1,
+					  sizeof(*lidx_test_buckets));
+	lidx_queries = vmalloc_array(LIDX_NQ, sizeof(*lidx_queries));
+	if (!lidx_test_buckets || !lidx_queries) {
+		ret = -ENOMEM;
+		goto out;
+	}
+
+	/* The model published at boot, through the production entry point. */
+	for (i = 0; i < n; i++) {
+		unsigned long a = kallsyms_sym_address(i);
+
+		st.queries++;
+		if (kallsyms_addr_pos(a) != kallsyms_addr_pos_bsearch(a))
+			st.mismatches++;
+	}
+	pr_info("lidx production kallsyms_addr_pos() queries=%llu mismatches=%llu\n",
+		st.queries, st.mismatches);
+	bad += st.mismatches;
+
+	ret = kallsyms_lidx_build(&lidx_test_model, lidx_test_buckets);
+	if (ret) {
+		pr_info("lidx build failed: %d\n", ret);
+		bad++;
+		goto done;
+	}
+	bad += lidx_check_all("check");
+	bad += lidx_check_corrupt();
+
+	for (stream = 0; stream < LIDX_NR_STREAMS; stream++) {
+		lidx_fill_queries(stream);
+		lidx_time(stream, false);
+		lidx_time(stream, true);
+	}
+	lidx_fill_queries(LIDX_RANDKEY);
+	bad += lidx_check_nmi();
+done:
+	pr_info("lidx result: %s (%llu bad), sink=%lx\n",
+		bad ? "FAIL" : "PASS", bad, lidx_sink);
+	ret = bad ? -EINVAL : 0;
+out:
+	vfree(lidx_queries);
+	vfree(lidx_test_buckets);
+	return ret;
+}
+#else
+static int test_kallsyms_learned_index(void)
+{
+	return 0;
+}
+#endif
+
 static int test_entry(void *p)
 {
 	int ret;
@@ -426,6 +768,11 @@ static int test_entry(void *p)
 	test_perf_kallsyms_lookup_name();
 	test_perf_kallsyms_on_each_symbol();
 	test_perf_kallsyms_on_each_match_symbol();
+	ret = test_kallsyms_learned_index();
+	if (ret) {
+		pr_info("learned index abort\n");
+		return 0;
+	}
 	pr_info("finish\n");
 
 	return 0;
