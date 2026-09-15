@@ -54,6 +54,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
+#include <time.h>
 #include <linux/dma-heap.h>
 #include <linux/io_uring.h>
 #include <linux/memfd.h>
@@ -300,6 +301,8 @@ int main(int argc, char **argv)
 	size_t size = 8u << 20, map_size;
 	uint64_t off = 1ull << 30;
 	int bdev, src_fd = -1, dst_fd = -1, ret, rc = KSFT_FAIL;
+	struct timespec t0, t1;
+	double reg_us = 0, first_us = 0, second_us = 0;
 	uint8_t *src, *dst, *plain;
 	struct ring r;
 	struct stat st;
@@ -391,9 +394,12 @@ int main(int argc, char **argv)
 			perror("mmap dma-buf");
 			return KSFT_FAIL;
 		}
+		clock_gettime(CLOCK_MONOTONIC, &t0);
 		ret = register_dmabuf(&r, 0, src_fd, bdev);
 		if (!ret)
 			ret = register_dmabuf(&r, 1, dst_fd, bdev);
+		clock_gettime(CLOCK_MONOTONIC, &t1);
+		reg_us = (t1.tv_sec - t0.tv_sec) * 1e6 + (t1.tv_nsec - t0.tv_nsec) / 1e3;
 		if (ret) {
 			fprintf(stderr, "register dma-buf: %s\n",
 				strerror(-ret));
@@ -419,14 +425,33 @@ int main(int argc, char **argv)
 	memset(dst, 0, size);
 
 	/*
+	 * The device mapping of a dma-buf is made on first use, so the first
+	 * fixed write carries the map cost and the second one does not; the
+	 * difference is what a larger-folio exporter buys at map time.
+	 */
+
+	/*
 	 * For a dma-buf fixed buffer sqe->addr is the byte offset into the
 	 * buffer (there is no user address); for a bvec one it is the user
 	 * address inside the registered range.
 	 */
+	clock_gettime(CLOCK_MONOTONIC, &t0);
 	ret = ring_rw_fixed(&r, IORING_OP_WRITE_FIXED, bdev, 0,
 			    is_dmabuf ? 0 : (uint64_t)(uintptr_t)src, size, off);
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	first_us = (t1.tv_sec - t0.tv_sec) * 1e6 + (t1.tv_nsec - t0.tv_nsec) / 1e3;
 	if (ret != (int)size) {
 		fprintf(stderr, "WRITE_FIXED: %d (%s)\n", ret,
+			ret < 0 ? strerror(-ret) : "short");
+		goto out;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &t0);
+	ret = ring_rw_fixed(&r, IORING_OP_WRITE_FIXED, bdev, 0,
+			    is_dmabuf ? 0 : (uint64_t)(uintptr_t)src, size, off);
+	clock_gettime(CLOCK_MONOTONIC, &t1);
+	second_us = (t1.tv_sec - t0.tv_sec) * 1e6 + (t1.tv_nsec - t0.tv_nsec) / 1e3;
+	if (ret != (int)size) {
+		fprintf(stderr, "WRITE_FIXED (second): %d (%s)\n", ret,
 			ret < 0 ? strerror(-ret) : "short");
 		goto out;
 	}
@@ -466,6 +491,8 @@ int main(int argc, char **argv)
 	}
 	printf("ok - %s %s: %zu bytes written and read back exact at offset %llu\n",
 	       dev, mode, size, (unsigned long long)off);
+	printf("# %s: register %.0f us, first write %.0f us, second write %.0f us\n",
+	       mode, reg_us, first_us, second_us);
 	rc = KSFT_PASS;
 out:
 	return rc;
