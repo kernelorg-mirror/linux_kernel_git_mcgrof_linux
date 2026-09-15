@@ -385,6 +385,16 @@ struct queue_limits {
 
 	unsigned int		max_hw_sectors;
 	unsigned int		max_dev_sectors;
+	/*
+	 * Command-size ceiling for a dma-buf backed bio (REQ_DMABUF).  Such a
+	 * bio carries a DMA mapping the device established once, at buffer
+	 * registration, so it takes no per-command IOVA allocation and is not
+	 * subject to the dma_opt_mapping_size() clamp a driver folds into
+	 * max_hw_sectors on a translating IOMMU; a driver may set it to the
+	 * device's true maximum (for NVMe, MDTS).  0 means dma-buf bios follow
+	 * max_sectors like any other.
+	 */
+	unsigned int		max_hw_dmabuf_sectors;
 	unsigned int		chunk_sectors;
 	unsigned int		max_sectors;
 	unsigned int		max_user_sectors;
@@ -1262,6 +1272,12 @@ static inline unsigned int queue_max_bytes(struct request_queue *q)
 static inline unsigned int queue_max_hw_sectors(const struct request_queue *q)
 {
 	return q->limits.max_hw_sectors;
+}
+
+static inline unsigned int
+queue_max_hw_dmabuf_sectors(const struct request_queue *q)
+{
+	return q->limits.max_hw_dmabuf_sectors;
 }
 
 static inline unsigned short queue_max_segments(const struct request_queue *q)

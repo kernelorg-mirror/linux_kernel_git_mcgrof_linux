@@ -244,6 +244,8 @@ static inline unsigned get_max_io_size(struct bio *bio,
 		max_sectors = lim->max_write_zeroes_sectors;
 	else if (is_atomic)
 		max_sectors = lim->atomic_write_max_sectors;
+	else if (op_is_dmabuf(bio->bi_opf) && lim->max_hw_dmabuf_sectors)
+		max_sectors = lim->max_hw_dmabuf_sectors;
 	else
 		max_sectors = lim->max_sectors;
 

@@ -261,6 +261,7 @@ static ssize_t queue_##_field##_show(struct gendisk *disk, char *page)	\
 
 QUEUE_SYSFS_LIMIT_SHOW_SECTORS_TO_KB(max_sectors)
 QUEUE_SYSFS_LIMIT_SHOW_SECTORS_TO_KB(max_hw_sectors)
+QUEUE_SYSFS_LIMIT_SHOW_SECTORS_TO_KB(max_hw_dmabuf_sectors)
 
 #define QUEUE_SYSFS_SHOW_CONST(_name, _val)				\
 static ssize_t queue_##_name##_show(struct gendisk *disk, char *page)	\
@@ -613,6 +614,7 @@ QUEUE_RW_ENTRY(queue_async_depth, "async_depth");
 QUEUE_RW_ENTRY(queue_ra, "read_ahead_kb");
 QUEUE_LIM_RW_ENTRY(queue_max_sectors, "max_sectors_kb");
 QUEUE_LIM_RO_ENTRY(queue_max_hw_sectors, "max_hw_sectors_kb");
+QUEUE_LIM_RO_ENTRY(queue_max_hw_dmabuf_sectors, "max_hw_dmabuf_sectors_kb");
 QUEUE_LIM_RO_ENTRY(queue_max_segments, "max_segments");
 QUEUE_LIM_RO_ENTRY(queue_max_integrity_segments, "max_integrity_segments");
 QUEUE_LIM_RO_ENTRY(queue_max_segment_size, "max_segment_size");
@@ -737,6 +739,7 @@ static const struct attribute *const queue_attrs[] = {
 	 * Attributes which are protected with q->limits_lock.
 	 */
 	&queue_max_hw_sectors_entry.attr,
+	&queue_max_hw_dmabuf_sectors_entry.attr,
 	&queue_max_sectors_entry.attr,
 	&queue_max_segments_entry.attr,
 	&queue_max_discard_segments_entry.attr,

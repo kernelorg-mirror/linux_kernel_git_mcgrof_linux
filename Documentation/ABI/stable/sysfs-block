@@ -511,6 +511,20 @@ Description:
 		single data transfer.
 
 
+What:		/sys/block/<disk>/queue/max_hw_dmabuf_sectors_kb
+Date:		September 2026
+Contact:	linux-block@vger.kernel.org
+Description:
+		[RO] The maximum size, in kilobytes, of a single request whose
+		data buffer is a dma-buf registered with the device (a
+		REQ_DMABUF bio).  Such a request reuses a DMA mapping the
+		device established once at registration and so is not bound
+		by the per-command mapping clamp reflected in
+		max_hw_sectors_kb; it can therefore be larger than
+		max_hw_sectors_kb.  0 means dma-buf requests follow
+		max_sectors_kb like any other request.
+
+
 What:		/sys/block/<disk>/queue/max_integrity_segments
 Date:		September 2010
 Contact:	linux-block@vger.kernel.org
