@@ -80,6 +80,9 @@ static ssize_t ext4_dio_read_iter(struct kiocb *iocb, struct iov_iter *to)
 
 	if (!ext4_should_use_dio(iocb, to)) {
 		inode_unlock_shared(inode);
+		/* a device mapping has no buffered path to fall back to */
+		if (iov_iter_is_dmabuf_map(to))
+			return -EOPNOTSUPP;
 		/*
 		 * Fallback to buffered I/O if the operation being performed on
 		 * the inode is not supported by direct I/O. The IOCB_DIRECT
@@ -145,6 +148,8 @@ static ssize_t ext4_file_read_iter(struct kiocb *iocb, struct iov_iter *to)
 #endif
 	if (iocb->ki_flags & IOCB_DIRECT)
 		return ext4_dio_read_iter(iocb, to);
+	if (iov_iter_is_dmabuf_map(to))
+		return -EOPNOTSUPP;
 
 	return generic_file_read_iter(iocb, to);
 }
@@ -612,6 +617,8 @@ static ssize_t ext4_dio_write_iter(struct kiocb *iocb, struct iov_iter *from)
 			inode_unlock_shared(inode);
 		else
 			inode_unlock(inode);
+		if (iov_iter_is_dmabuf_map(from))
+			return -EOPNOTSUPP;
 		return ext4_buffered_write_iter(iocb, from);
 	}
 
@@ -676,6 +683,10 @@ out:
 		 * writes.
 		 */
 		WARN_ON_ONCE(iocb->ki_flags & IOCB_ATOMIC);
+
+		/* a device mapping cannot complete through the page cache */
+		if (iov_iter_is_dmabuf_map(from))
+			return ret ? ret : -EOPNOTSUPP;
 
 		offset = iocb->ki_pos;
 		err = ext4_buffered_write_iter(iocb, from);
@@ -792,8 +803,9 @@ ext4_file_write_iter(struct kiocb *iocb, struct iov_iter *from)
 
 	if (iocb->ki_flags & IOCB_DIRECT)
 		return ext4_dio_write_iter(iocb, from);
-	else
-		return ext4_buffered_write_iter(iocb, from);
+	if (iov_iter_is_dmabuf_map(from))
+		return -EOPNOTSUPP;
+	return ext4_buffered_write_iter(iocb, from);
 }
 
 #ifdef CONFIG_FS_DAX
@@ -1036,6 +1048,7 @@ const struct file_operations ext4_file_operations = {
 	.llseek		= ext4_llseek,
 	.read_iter	= ext4_file_read_iter,
 	.write_iter	= ext4_file_write_iter,
+	.init_dma_buf_io_ctx = iomap_file_init_dma_buf_io_ctx,
 	.iopoll		= iocb_bio_iopoll,
 	.unlocked_ioctl = ext4_ioctl,
 #ifdef CONFIG_COMPAT
