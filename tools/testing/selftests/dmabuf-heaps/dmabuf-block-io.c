@@ -14,6 +14,8 @@
  *   sysheap /dev/dma_heap/system: the dma-buf system heap's own
  *           allocation (1 MiB, 64 KiB, 4 KiB chunks upstream; 2 MiB with
  *           Davidlohr Bueso's "2MB system heap chunks" series).
+ *   cmaheap /dev/dma_heap/reserved: the CMA heap over the area reserved
+ *           at boot with cma=; one contiguous range per allocation.
  *
  * The check is data-exact: fill the source dma-buf through mmap() with a
  * pattern, WRITE_FIXED it to the device, READ_FIXED the same range into a
@@ -28,7 +30,8 @@
  * Measured on that rig with intel_iommu=on iommu=nopt: bvec 64 x 128 KiB
  * per direction, udmabuf / udmabuf-huge / sysheap 1 x 8 MiB per direction.
  *
- * Usage: dmabuf-block-io <bdev-or-file> <udmabuf|udmabuf-huge|sysheap|bvec>
+ * Usage: dmabuf-block-io <bdev-or-file>
+ *        <udmabuf|udmabuf-huge|sysheap|cmaheap|bvec>
  *        [size] [offset]
  *        size defaults to 8 MiB, offset to 1 GiB into a block device and 0
  *        into a file.  A block device range is overwritten: point it at a
@@ -257,12 +260,12 @@ static int udmabuf_dmabuf(size_t size, int huge)
 	return ret;
 }
 
-static int sysheap_dmabuf(size_t size)
+static int heap_dmabuf(const char *path, size_t size)
 {
 	struct dma_heap_allocation_data a;
 	int dev, ret;
 
-	dev = open("/dev/dma_heap/system", O_RDONLY | O_CLOEXEC);
+	dev = open(path, O_RDONLY | O_CLOEXEC);
 	if (dev < 0)
 		return -errno;
 	memset(&a, 0, sizeof(a));
@@ -309,7 +312,7 @@ int main(int argc, char **argv)
 	int is_dmabuf;
 
 	if (argc < 3) {
-		fprintf(stderr, "usage: %s <bdev> <udmabuf|udmabuf-huge|sysheap|bvec> [size] [offset]\n",
+		fprintf(stderr, "usage: %s <bdev> <udmabuf|udmabuf-huge|sysheap|cmaheap|bvec> [size] [offset]\n",
 			argv[0]);
 		return KSFT_FAIL;
 	}
@@ -372,12 +375,21 @@ int main(int argc, char **argv)
 			return ret == -ENOENT || ret == -ENODEV ? KSFT_SKIP :
 				KSFT_FAIL;
 		}
-	} else if (!strcmp(mode, "sysheap")) {
-		src_fd = sysheap_dmabuf(size);
-		dst_fd = sysheap_dmabuf(size);
+	} else if (!strcmp(mode, "sysheap") || !strcmp(mode, "cmaheap")) {
+		/*
+		 * The CMA heap serves the boot-time reserved area (cma= on the
+		 * kernel command line, heap name "reserved"): one physically
+		 * contiguous range per allocation, immune to allocator
+		 * fragmentation.
+		 */
+		const char *heap = !strcmp(mode, "cmaheap") ?
+			"/dev/dma_heap/reserved" : "/dev/dma_heap/system";
+
+		src_fd = heap_dmabuf(heap, size);
+		dst_fd = heap_dmabuf(heap, size);
 		if (src_fd < 0 || dst_fd < 0) {
 			ret = src_fd < 0 ? src_fd : dst_fd;
-			fprintf(stderr, "dma_heap system: %s\n", strerror(-ret));
+			fprintf(stderr, "%s: %s\n", heap, strerror(-ret));
 			return ret == -ENOENT ? KSFT_SKIP : KSFT_FAIL;
 		}
 	} else if (strcmp(mode, "bvec")) {
