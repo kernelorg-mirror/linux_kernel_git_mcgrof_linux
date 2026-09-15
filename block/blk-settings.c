@@ -419,6 +419,26 @@ int blk_validate_limits(struct queue_limits *lim)
 			logical_block_sectors);
 
 	/*
+	 * The dma-buf ceiling may exceed max_sectors and the
+	 * dma_opt_mapping_size() clamp folded into max_hw_sectors, since a
+	 * dma-buf backed bio allocates no IOVA per command.  It is still a
+	 * hardware ceiling: cap it at max_dev_sectors when one is set, and
+	 * never let it fall below the ordinary ceiling so that setting it can
+	 * only ever enlarge what a dma-buf bio may carry.
+	 */
+	if (lim->max_hw_dmabuf_sectors) {
+		if (lim->max_dev_sectors)
+			lim->max_hw_dmabuf_sectors =
+				min(lim->max_hw_dmabuf_sectors,
+				    lim->max_dev_sectors);
+		lim->max_hw_dmabuf_sectors = max(lim->max_hw_dmabuf_sectors,
+						 lim->max_sectors);
+		lim->max_hw_dmabuf_sectors =
+			round_down(lim->max_hw_dmabuf_sectors,
+				   logical_block_sectors);
+	}
+
+	/*
 	 * Random default for the maximum number of segments.  Driver should not
 	 * rely on this and set their own.
 	 */
@@ -805,6 +825,8 @@ int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
 			b->max_user_sectors);
 	t->max_hw_sectors = min_not_zero(t->max_hw_sectors, b->max_hw_sectors);
 	t->max_dev_sectors = min_not_zero(t->max_dev_sectors, b->max_dev_sectors);
+	t->max_hw_dmabuf_sectors = min_not_zero(t->max_hw_dmabuf_sectors,
+						b->max_hw_dmabuf_sectors);
 	t->max_write_zeroes_sectors = min(t->max_write_zeroes_sectors,
 					b->max_write_zeroes_sectors);
 	t->max_user_wzeroes_unmap_sectors =
@@ -904,6 +926,8 @@ int blk_stack_limits(struct queue_limits *t, struct queue_limits *b,
 	t->max_sectors = blk_round_down_sectors(t->max_sectors, t->logical_block_size);
 	t->max_hw_sectors = blk_round_down_sectors(t->max_hw_sectors, t->logical_block_size);
 	t->max_dev_sectors = blk_round_down_sectors(t->max_dev_sectors, t->logical_block_size);
+	t->max_hw_dmabuf_sectors = blk_round_down_sectors(t->max_hw_dmabuf_sectors,
+			t->logical_block_size);
 
 	/* Discard alignment and granularity */
 	if (b->discard_granularity) {
