@@ -932,10 +932,19 @@ static int blkdev_mmap_prepare(struct vm_area_desc *desc)
 	return generic_file_mmap_prepare(desc);
 }
 
-static int blkdev_init_dma_buf_io_ctx(struct file *file,
-				      struct dma_buf_io_ctx *ctx)
+/**
+ * bdev_init_dma_buf_io_ctx - attach a dma-buf I/O context to a block device
+ * @file: the file the I/O will be issued on, which must be O_DIRECT
+ * @bdev: the block device that will carry the I/O
+ * @ctx: the context to initialise with the device's dma-buf ops
+ *
+ * For a file system file @bdev is the device the file's data lives on; the
+ * file system decides which one that is.  Returns -EOPNOTSUPP when the
+ * driver cannot attach a dma-buf.
+ */
+int bdev_init_dma_buf_io_ctx(struct file *file, struct block_device *bdev,
+			     struct dma_buf_io_ctx *ctx)
 {
-	struct block_device *bdev = file_bdev(file);
 	struct gendisk *disk = bdev->bd_disk;
 
 	if (!(file->f_flags & O_DIRECT))
@@ -943,6 +952,13 @@ static int blkdev_init_dma_buf_io_ctx(struct file *file,
 	if (!disk->fops->init_dma_buf_io_ctx)
 		return -EOPNOTSUPP;
 	return disk->fops->init_dma_buf_io_ctx(bdev, ctx);
+}
+EXPORT_SYMBOL_GPL(bdev_init_dma_buf_io_ctx);
+
+static int blkdev_init_dma_buf_io_ctx(struct file *file,
+				      struct dma_buf_io_ctx *ctx)
+{
+	return bdev_init_dma_buf_io_ctx(file, file_bdev(file), ctx);
 }
 
 const struct file_operations def_blk_fops = {

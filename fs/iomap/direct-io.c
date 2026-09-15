@@ -595,7 +595,12 @@ out:
 
 static int iomap_dio_hole_iter(struct iomap_iter *iter, struct iomap_dio *dio)
 {
-	loff_t length = iov_iter_zero(iomap_length(iter), dio->submit.iter);
+	loff_t length;
+
+	/* a device mapping cannot be zeroed from the CPU */
+	if (iov_iter_is_dmabuf_map(dio->submit.iter))
+		return -EOPNOTSUPP;
+	length = iov_iter_zero(iomap_length(iter), dio->submit.iter);
 
 	dio->size += length;
 	if (!length)
@@ -611,6 +616,10 @@ static int iomap_dio_inline_iter(struct iomap_iter *iomi, struct iomap_dio *dio)
 	loff_t length = iomap_length(iomi);
 	loff_t pos = iomi->pos;
 	u64 copied;
+
+	/* inline data is copied through the CPU; a device mapping has none */
+	if (iov_iter_is_dmabuf_map(dio->submit.iter))
+		return -EOPNOTSUPP;
 
 	if (WARN_ON_ONCE(!inline_data))
 		return -EIO;
@@ -722,6 +731,16 @@ __iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
 	dio->error = 0;
 	dio->flags = dio_flags & (IOMAP_DIO_FSBLOCK_ALIGNED | IOMAP_DIO_BOUNCE);
 	dio->done_before = done_before;
+
+	/*
+	 * A dma-buf backed iterator is a device mapping made at registration:
+	 * the block layer issues it as a dma-map backed bio and nothing here
+	 * may touch the data from the CPU, so bouncing is out.
+	 */
+	if (iov_iter_is_dmabuf_map(iter) && (dio->flags & IOMAP_DIO_BOUNCE)) {
+		ret = -EOPNOTSUPP;
+		goto out_free_dio;
+	}
 
 	dio->submit.iter = iter;
 	dio->submit.waiter = current;
@@ -914,6 +933,28 @@ iomap_dio_rw(struct kiocb *iocb, struct iov_iter *iter,
 	return iomap_dio_complete(dio);
 }
 EXPORT_SYMBOL_GPL(iomap_dio_rw);
+
+/**
+ * iomap_file_init_dma_buf_io_ctx - dma-buf I/O context for a file on one bdev
+ * @file: an O_DIRECT file whose data lives on its super block's device
+ * @ctx: the context to initialise
+ *
+ * Lets a file system whose file data lives on sb->s_bdev serve as the target
+ * of a dma-buf registered buffer: reads and writes against the buffer then
+ * flow through iomap direct I/O as dma-map backed bios, mapped once at
+ * registration rather than per command.  A file system with more than one
+ * data device picks the device itself and calls bdev_init_dma_buf_io_ctx().
+ */
+int iomap_file_init_dma_buf_io_ctx(struct file *file,
+				   struct dma_buf_io_ctx *ctx)
+{
+	struct block_device *bdev = file_inode(file)->i_sb->s_bdev;
+
+	if (!bdev)
+		return -EOPNOTSUPP;
+	return bdev_init_dma_buf_io_ctx(file, bdev, ctx);
+}
+EXPORT_SYMBOL_GPL(iomap_file_init_dma_buf_io_ctx);
 
 struct iomap_dio_simple {
 	struct kiocb		*iocb;
