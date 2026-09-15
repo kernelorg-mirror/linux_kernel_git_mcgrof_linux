@@ -4159,6 +4159,13 @@ static struct nvme_dev *nvme_pci_alloc_dev(struct pci_dev *pdev,
 	dev->ctrl.max_hw_sectors = min_t(u32,
 			NVME_MAX_BYTES >> SECTOR_SHIFT,
 			dma_opt_mapping_size(&pdev->dev) >> 9);
+	/*
+	 * A dma-buf backed request reuses the mapping made at registration
+	 * and allocates no IOVA per command, so it is bounded only by what
+	 * the descriptor pools can describe; MDTS is folded in at identify.
+	 */
+	if (IS_ENABLED(CONFIG_DMA_SHARED_BUFFER))
+		dev->ctrl.max_hw_dmabuf_sectors = NVME_MAX_BYTES >> SECTOR_SHIFT;
 	dev->ctrl.max_segments = NVME_MAX_SEGS;
 	dev->ctrl.max_integrity_segments = 1;
 	return dev;
