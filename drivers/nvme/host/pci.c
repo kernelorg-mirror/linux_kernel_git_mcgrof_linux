@@ -40,10 +40,15 @@
 #define NVME_SMALL_POOL_SIZE	256
 
 /*
- * Arbitrary upper bound.
+ * Largest single request the driver will build.  Every path is bounded by
+ * it: the ordinary max_hw_sectors, the dma-buf request ceiling, and the
+ * passthrough mapping.  The PRP descriptor budget below is derived from it,
+ * so raising it costs one pointer per additional PRP list page in every
+ * request PDU (struct nvme_iod): 32 MiB needs 17 PRP list pages against the
+ * 5 that 8 MiB needed, 96 bytes more per request.  The SGL path is not
+ * affected; it is bounded by NVME_MAX_SEGS entries of any length.
  */
-#define NVME_MAX_BYTES		SZ_8M
-#define NVME_MAX_NR_DESCRIPTORS	5
+#define NVME_MAX_BYTES		SZ_32M
 
 /*
  * For data SGLs we support a single descriptors worth of SGL entries.
@@ -71,8 +76,16 @@
 #define MAX_PRP_RANGE \
 	(NVME_MAX_BYTES + 2 * (NVME_CTRL_PAGE_SIZE - 1))
 
+/*
+ * PRP list pages needed to describe MAX_PRP_RANGE: every page after the one
+ * PRP1 covers needs an entry, PRPS_PER_PAGE of them fit in a list page.
+ */
+#define NVME_MAX_NR_DESCRIPTORS \
+	DIV_ROUND_UP(MAX_PRP_RANGE / NVME_CTRL_PAGE_SIZE - 1, PRPS_PER_PAGE)
+
 static_assert(MAX_PRP_RANGE / NVME_CTRL_PAGE_SIZE <=
 	(1 /* prp1 */ + NVME_MAX_NR_DESCRIPTORS * PRPS_PER_PAGE));
+static_assert(NVME_MAX_NR_DESCRIPTORS <= U8_MAX);
 
 struct quirk_entry {
 	u16 vendor_id;
