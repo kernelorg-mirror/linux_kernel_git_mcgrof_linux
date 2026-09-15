@@ -325,6 +325,8 @@ xfs_file_read_iter(
 		ret = xfs_file_dax_read(iocb, to);
 	else if (iocb->ki_flags & IOCB_DIRECT)
 		ret = xfs_file_dio_read(iocb, to);
+	else if (iov_iter_is_dmabuf_map(to))
+		ret = -EOPNOTSUPP;	/* a device mapping has no buffered path */
 	else
 		ret = xfs_file_buffered_read(iocb, to);
 
@@ -1192,9 +1194,30 @@ xfs_file_write_iter(
 			return ret;
 	}
 
+	/* a device mapping cannot complete through the page cache */
+	if (iov_iter_is_dmabuf_map(from))
+		return -EOPNOTSUPP;
 	if (xfs_is_zoned_inode(ip))
 		return xfs_file_buffered_write_zoned(iocb, from);
 	return xfs_file_buffered_write(iocb, from);
+}
+
+/*
+ * The data device for this inode: the realtime device for a realtime file,
+ * the data device otherwise.  That is where a dma-buf registered against the
+ * file gets mapped.
+ */
+static int
+xfs_file_init_dma_buf_io_ctx(
+	struct file		*file,
+	struct dma_buf_io_ctx	*ctx)
+{
+	struct xfs_inode	*ip = XFS_I(file_inode(file));
+
+	if (xfs_is_zoned_inode(ip))
+		return -EOPNOTSUPP;
+	return bdev_init_dma_buf_io_ctx(file, xfs_inode_buftarg(ip)->bt_bdev,
+					ctx);
 }
 
 /* Does this file, inode, or mount want synchronous writes? */
@@ -2158,6 +2181,7 @@ const struct file_operations xfs_file_operations = {
 	.llseek		= xfs_file_llseek,
 	.read_iter	= xfs_file_read_iter,
 	.write_iter	= xfs_file_write_iter,
+	.init_dma_buf_io_ctx = xfs_file_init_dma_buf_io_ctx,
 	.splice_read	= xfs_file_splice_read,
 	.splice_write	= iter_file_splice_write,
 	.iopoll		= iocb_bio_iopoll,
