@@ -2082,6 +2082,7 @@ static void nvme_set_ctrl_limits(struct nvme_ctrl *ctrl,
 		struct queue_limits *lim, bool is_admin)
 {
 	lim->max_hw_sectors = ctrl->max_hw_sectors;
+	lim->max_hw_dmabuf_sectors = ctrl->max_hw_dmabuf_sectors;
 	lim->max_segments = min_t(u32, USHRT_MAX,
 		min_not_zero(nvme_max_drv_segments(ctrl), ctrl->max_segments));
 	lim->max_integrity_segments = ctrl->max_integrity_segments;
@@ -3692,6 +3693,14 @@ static int nvme_init_identify(struct nvme_ctrl *ctrl)
 		max_hw_sectors = UINT_MAX;
 	ctrl->max_hw_sectors =
 		min_not_zero(ctrl->max_hw_sectors, max_hw_sectors);
+	/*
+	 * MDTS is the device's real command ceiling; the transport folds its
+	 * own hard limit in and nothing folds the per-command mapping clamp in,
+	 * so a dma-buf backed request reaches the device's real command size.
+	 */
+	if (ctrl->max_hw_dmabuf_sectors)
+		ctrl->max_hw_dmabuf_sectors =
+			min(ctrl->max_hw_dmabuf_sectors, max_hw_sectors);
 
 	lim = queue_limits_start_update(ctrl->admin_q);
 	nvme_set_ctrl_limits(ctrl, &lim, true);

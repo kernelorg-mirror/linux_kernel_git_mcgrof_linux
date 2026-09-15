@@ -384,6 +384,14 @@ struct nvme_ctrl {
 
 	u64 cap;
 	u32 max_hw_sectors;
+	/*
+	 * Ceiling for a dma-buf backed request: the transport's hard maximum
+	 * with MDTS folded in, but without the dma_opt_mapping_size() clamp
+	 * that bounds max_hw_sectors on a translating IOMMU.  0 on transports
+	 * that cannot attach a dma-buf, which leaves such requests on
+	 * max_sectors.
+	 */
+	u32 max_hw_dmabuf_sectors;
 	u32 max_segments;
 	u32 max_integrity_segments;
 	u32 max_zeroes_sectors;
