@@ -28,10 +28,14 @@
  * Measured on that rig with intel_iommu=on iommu=nopt: bvec 64 x 128 KiB
  * per direction, udmabuf / udmabuf-huge / sysheap 1 x 8 MiB per direction.
  *
- * Usage: dmabuf-block-io <bdev> <udmabuf|udmabuf-huge|sysheap|bvec>
- *        [size]
- *        [offset]   size defaults to 8 MiB, offset to 1 GiB into the device.
- *        The range is overwritten: point it at a scratch namespace.
+ * Usage: dmabuf-block-io <bdev-or-file> <udmabuf|udmabuf-huge|sysheap|bvec>
+ *        [size] [offset]
+ *        size defaults to 8 MiB, offset to 1 GiB into a block device and 0
+ *        into a file.  A block device range is overwritten: point it at a
+ *        scratch namespace.  A regular file is created if missing and
+ *        extended to cover the range, so the write allocates and the read
+ *        hits mapped extents: this is the iomap direct I/O path on ext4
+ *        or XFS with the file as the registration target.
  * Exit: 0 pass, 1 fail, 4 skip (feature unavailable).
  */
 #ifndef _GNU_SOURCE
@@ -47,6 +51,7 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <linux/dma-heap.h>
@@ -297,6 +302,7 @@ int main(int argc, char **argv)
 	int bdev, src_fd = -1, dst_fd = -1, ret, rc = KSFT_FAIL;
 	uint8_t *src, *dst, *plain;
 	struct ring r;
+	struct stat st;
 	int is_dmabuf;
 
 	if (argc < 3) {
@@ -312,10 +318,25 @@ int main(int argc, char **argv)
 		off = strtoull(argv[4], NULL, 0);
 	is_dmabuf = strcmp(mode, "bvec") != 0;
 
-	bdev = open(dev, O_RDWR | O_DIRECT | O_CLOEXEC);
+	/*
+	 * Create a missing regular file, but never under /dev: a device node
+	 * that is absent must stay absent rather than become a file on
+	 * devtmpfs, which has no device to attach a dma-buf to.
+	 */
+	bdev = open(dev, O_RDWR | O_DIRECT | O_CLOEXEC |
+		    (strncmp(dev, "/dev/", 5) ? O_CREAT : 0), 0600);
 	if (bdev < 0) {
-		perror("open bdev");
+		perror("open target");
 		return KSFT_FAIL;
+	}
+	if (fstat(bdev, &st) == 0 && S_ISREG(st.st_mode)) {
+		if (argc <= 4)
+			off = 0;
+		if ((uint64_t)st.st_size < off + size &&
+		    ftruncate(bdev, off + size) < 0) {
+			perror("ftruncate");
+			return KSFT_FAIL;
+		}
 	}
 	ret = ring_init(&r, 8);
 	if (ret) {
