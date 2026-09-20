@@ -1495,6 +1495,138 @@ create_evict_fence_fail:
 	return ret;
 }
 
+/* Scatter-gather table helpers describing a KFD BO, used by AIS file I/O. */
+static int get_sg_table_of_mmio_or_doorbel_bo(struct amdgpu_bo *bo,
+		struct device *dma_dev, enum dma_data_direction dir,
+		struct sg_table **sgt)
+{
+	dma_addr_t dma_addr;
+	s32 size, ret;
+	u64 addr;
+
+	/* Acquire the address of MMIO or DOORBELL BO being
+	 * exported. By policy the entire backing memory is
+	 * encapsulated in one scatterlist node
+	 */
+	size = bo->tbo.sg->sgl->length;
+	addr = bo->tbo.sg->sgl->dma_address;
+	pr_debug("MMIO/Doorbell address being exported: %llx\n", addr);
+
+	/* DMA map the acquired address - MMIO or DOORBELL */
+	dma_addr = dma_map_resource(dma_dev, addr, size,
+				    dir, DMA_ATTR_SKIP_CPU_SYNC);
+	ret = dma_mapping_error(dma_dev, dma_addr);
+	if (ret)
+		return ret;
+
+	/* Update output parameter with a new sg_table */
+	pr_debug("MMIO/Doorbell BO size: %d\n", size);
+	pr_debug("MMIO/Doorbell's DMA Address: %llx\n", dma_addr);
+	*sgt = create_sg_table(dma_addr, size);
+	return (*sgt) ? 0 : -ENOMEM;
+}
+
+int amdgpu_amdkfd_gpuvm_get_sg_table(struct amdgpu_device *adev,
+		struct amdgpu_bo *bo, uint32_t flags,
+		uint64_t offset, uint64_t size,
+		struct device *dma_dev, enum dma_data_direction dir,
+		struct sg_table **ret_sg)
+{
+	struct sg_table *sg = NULL;
+	struct page **pages;
+	uint64_t offset_in_page;
+	unsigned int page_size;
+	unsigned int cur_page;
+	size_t max_segment = 0;
+	uint64_t end;
+	int ret;
+
+	/* Determine access does not cross memory boundary */
+	if (check_add_overflow(offset, size, &end) || end > amdgpu_bo_size(bo))
+		return -EFAULT;
+
+	/* For GPU memory use VRAM Mgr to build SG Table */
+	if (bo->preferred_domains == AMDGPU_GEM_DOMAIN_VRAM) {
+		ret = amdgpu_vram_mgr_alloc_sgt(adev, bo->tbo.resource, offset,
+						size, dma_dev, dir, &sg);
+		*ret_sg = (ret == 0) ?  sg : NULL;
+		return ret;
+	}
+
+	/* Handle BO (type: ttm_bo_type_sg) that is used to surface
+	 * resources from MMIO address space. The allocation flag of
+	 * BO fall in MMIO_REMAP / DOORBELL domain
+	 */
+	if (bo->tbo.type == ttm_bo_type_sg &&
+	    ((flags & KFD_IOC_ALLOC_MEM_FLAGS_DOORBELL) ||
+	     (flags & KFD_IOC_ALLOC_MEM_FLAGS_MMIO_REMAP))) {
+		ret = get_sg_table_of_mmio_or_doorbel_bo(bo, dma_dev, dir, &sg);
+		*ret_sg = (ret == 0) ?  sg : NULL;
+		return ret;
+	}
+
+	/* Handle BO (type: ttm_bo_type_device) that is used to surface
+	 * memory resources from GPU's GART aperture. The allocation flag
+	 * of BO falls in GTT domain i.e. the physical backing memory is
+	 * part of system memory
+	 */
+
+	sg = kmalloc(sizeof(*sg), GFP_KERNEL);
+	if (!sg)
+		return -ENOMEM;
+
+	page_size = PAGE_SIZE;
+	offset_in_page = offset & (page_size - 1);
+
+	pages = bo->tbo.ttm->pages;
+	cur_page = offset / page_size;
+
+	max_segment = dma_max_mapping_size(dma_dev);
+	if (!max_segment)
+		max_segment = UINT_MAX;
+
+	ret = sg_alloc_table_from_pages_segment(sg, &pages[cur_page],
+						bo->tbo.ttm->num_pages - cur_page,
+						offset_in_page, size, max_segment,
+						GFP_KERNEL);
+	if (ret)
+		goto out;
+
+	if (dma_dev) {
+		ret = dma_map_sgtable(dma_dev, sg, dir, DMA_ATTR_SKIP_CPU_SYNC);
+		if (ret)
+			goto out_of_range;
+	}
+
+	*ret_sg = sg;
+	return 0;
+
+out_of_range:
+	sg_free_table(sg);
+out:
+	kfree(sg);
+	*ret_sg = NULL;
+	return ret;
+}
+
+void amdgpu_amdkfd_gpuvm_put_sg_table(struct amdgpu_bo *bo,
+		struct device *dma_dev, enum dma_data_direction dir,
+		struct sg_table *sgt)
+{
+	/* Unmap GPU device memory */
+	if (bo->preferred_domains == AMDGPU_GEM_DOMAIN_VRAM) {
+		amdgpu_vram_mgr_free_sgt(dma_dev, dir, sgt);
+		return;
+	}
+
+	/* Unmap system memory */
+	if (dma_dev)
+		dma_unmap_sgtable(dma_dev, sgt, dir, DMA_ATTR_SKIP_CPU_SYNC);
+	sg_free_table(sgt);
+	kfree(sgt);
+}
+
+
 /**
  * amdgpu_amdkfd_gpuvm_pin_bo() - Pins a BO using following criteria
  * @bo: Handle of buffer object being pinned
@@ -1506,7 +1638,7 @@ create_evict_fence_fail:
  *
  * Return: ZERO if successful in pinning, Non-Zero in case of error.
  */
-static int amdgpu_amdkfd_gpuvm_pin_bo(struct amdgpu_bo *bo, u32 domain)
+int amdgpu_amdkfd_gpuvm_pin_bo(struct amdgpu_bo *bo, u32 domain)
 {
 	int ret = 0;
 
@@ -1549,7 +1681,7 @@ out:
  *   - All other BO types (GTT, VRAM, MMIO and DOORBELL) will have their
  *     PIN count decremented. Calls to UNPIN must balance calls to PIN
  */
-static void amdgpu_amdkfd_gpuvm_unpin_bo(struct amdgpu_bo *bo)
+void amdgpu_amdkfd_gpuvm_unpin_bo(struct amdgpu_bo *bo)
 {
 	int ret = 0;
 

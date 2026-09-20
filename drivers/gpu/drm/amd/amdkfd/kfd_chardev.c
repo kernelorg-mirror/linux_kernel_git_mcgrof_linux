@@ -42,6 +42,7 @@
 #include "kfd_device_queue_manager.h"
 #include "kfd_svm.h"
 #include "amdgpu_amdkfd.h"
+#include "amdgpu_object.h"
 #include "kfd_smi_events.h"
 #include "amdgpu_dma_buf.h"
 #include "kfd_debug.h"
@@ -3431,6 +3432,101 @@ static int kfd_ioctl_profiler(struct file *filep, struct kfd_process *p, void *d
 	return -EINVAL;
 }
 
+static int kfd_ioctl_ais(struct file *filep, struct kfd_process *p, void *data)
+{
+	struct kfd_ioctl_ais_args *args = data;
+	struct kfd_ais_in_args *in = &args->in;
+	struct kfd_ais_out_args __user *out = &args->out, out_args = {0};
+	struct kfd_process_device *pdd;
+	struct kfd_node *dev;
+	struct kgd_mem *mem;
+	struct amdgpu_bo *bo;
+	int err;
+
+	if (in->op != KFD_IOC_AIS_READ && in->op != KFD_IOC_AIS_WRITE) {
+		pr_debug("AIS: Invalid operation: %d\n", in->op);
+		err = -EINVAL;
+		goto err_inval;
+	}
+
+	if (in->fd < 0) {
+		pr_debug("AIS: fd: %d\n", in->fd);
+		err = -EINVAL;
+		goto err_inval;
+	}
+
+	mutex_lock(&p->mutex);
+	pdd = kfd_process_device_data_by_id(p, GET_GPU_ID(in->handle));
+	if (!pdd) {
+		pr_debug("AIS: Could not find gpu id 0x%llx\n",
+			 GET_GPU_ID(in->handle));
+		err = -EINVAL;
+		goto err_unlock;
+	}
+	dev = pdd->dev;
+	if (!dev->kfd->ais_initialized) {
+		dev_dbg(dev->adev->dev, "AIS: is not initialized for device\n");
+		err = -ENODEV;
+		goto err_unlock;
+	}
+
+	pdd = kfd_bind_process_to_device(dev, p);
+	if (IS_ERR(pdd)) {
+		err = -ESRCH;
+		goto err_unlock;
+	}
+
+	mem = kfd_process_device_translate_handle(pdd,
+						  GET_IDR_HANDLE(in->handle));
+	if (!mem) {
+		err = -EINVAL;
+		goto err_unlock;
+	}
+
+	/* Only VRAM BOs are supported */
+	if (mem->domain != AMDGPU_GEM_DOMAIN_VRAM) {
+		dev_dbg(dev->adev->dev, "AIS: BO not in VRAM, but in %d\n",
+			mem->domain);
+		err = -EINVAL;
+		goto err_unlock;
+	}
+
+	/*
+	 * Hold a BO reference across the transfer. p->mutex is dropped for
+	 * the duration of the I/O, so without this a concurrent
+	 * FREE_MEMORY_OF_GPU could free the BO under us.
+	 */
+	bo = amdgpu_bo_ref(mem->bo);
+
+	err = amdgpu_amdkfd_gpuvm_pin_bo(bo, AMDGPU_GEM_DOMAIN_VRAM);
+	if (err) {
+		pr_err("Pinning of buffer failed.\n");
+		amdgpu_bo_unref(&bo);
+		goto err_unlock;
+	}
+
+	mutex_unlock(&p->mutex);
+
+	err = kfd_ais_rw_file(dev->adev, bo, in, pdd, &out_args.size_copied);
+	if (err) {
+		pr_err("Failed to %s AIS file: %d\n",
+		       in->op == KFD_IOC_AIS_READ ? "read" : "write", err);
+		out_args.status = err;
+	}
+
+	amdgpu_amdkfd_gpuvm_unpin_bo(bo);
+	amdgpu_bo_unref(&bo);
+	memcpy(out, &out_args, sizeof(out_args));
+	return err;
+
+err_unlock:
+	mutex_unlock(&p->mutex);
+err_inval:
+	out_args.status = err;
+	memcpy(out, &out_args, sizeof(out_args));
+	return err;
+}
+
 #define AMDKFD_IOCTL_DEF(ioctl, _func, _flags) \
 	[_IOC_NR(ioctl)] = {.cmd = ioctl, .func = _func, .flags = _flags, \
 			    .validate = NULL, .cmd_drv = 0, .name = #ioctl}
@@ -3560,6 +3656,9 @@ static const struct amdkfd_ioctl_desc amdkfd_ioctls[] = {
 
 	AMDKFD_IOCTL_DEF(AMDKFD_IOC_PROFILER,
 			kfd_ioctl_profiler, 0),
+
+	AMDKFD_IOCTL_DEF(AMDKFD_IOC_AIS_OP,
+			kfd_ioctl_ais, 0),
 };
 
 #define AMDKFD_CORE_IOCTL_COUNT	ARRAY_SIZE(amdkfd_ioctls)
@@ -3581,7 +3680,8 @@ static long kfd_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 		goto err_i1;
 	}
 
-	if ((nr >= AMDKFD_COMMAND_START) && (nr < AMDKFD_COMMAND_END)) {
+	if (((nr >= AMDKFD_COMMAND_START) && (nr < AMDKFD_COMMAND_END)) ||
+	    ((nr >= AMDKFD_COMMAND_START_2) && (nr < AMDKFD_COMMAND_END_2))) {
 		u32 amdkfd_size;
 
 		ioctl = &amdkfd_ioctls[nr];

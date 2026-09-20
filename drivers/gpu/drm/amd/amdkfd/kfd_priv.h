@@ -389,6 +389,9 @@ struct kfd_dev {
 	struct mutex profiler_lock;
 	/* Process currently holding the lock */
 	struct kfd_process *profiler_process;
+
+	/* flag for AIS */
+	bool ais_initialized;
 };
 
 enum kfd_mempool {
@@ -769,6 +772,15 @@ enum kfd_pdd_bound {
 #define SDMA_ACTIVITY_DIVISOR  100
 
 /* Data that is per-process-per device. */
+/* Per-storage-device AIS byte counters, exposed under the pdd's AIS kobject. */
+struct ais_counter_entry {
+	int pci_devfn;
+	struct attribute attr_bytes_read;
+	struct attribute attr_bytes_written;
+	uint64_t bytes_read;
+	uint64_t bytes_written;
+};
+
 struct kfd_process_device {
 	/* The device that owns this data. */
 	struct kfd_node *dev;
@@ -852,6 +864,12 @@ struct kfd_process_device {
 	struct attribute attr_faults;
 	struct attribute attr_page_in;
 	struct attribute attr_page_out;
+
+	/* xarray of AIS counters, entries are struct ais_counter_entry *,
+	 * indexed by PCI devfn
+	 */
+	struct kobject *kobj_ais;
+	struct xarray ais_counters_xa;
 	uint64_t faults;
 	uint64_t page_in;
 	uint64_t page_out;
@@ -1643,6 +1661,13 @@ int kfd_ptl_disable_request(struct kfd_process_device *pdd,
 		struct kfd_process *p);
 int kfd_ptl_disable_release(struct kfd_process_device *pdd,
 		struct kfd_process *p);
+
+/* AIS Support */
+int kfd_ais_init(struct amdgpu_device *adev);
+void kfd_ais_deinit(struct amdgpu_device *adev);
+int kfd_ais_rw_file(struct amdgpu_device *adev, struct amdgpu_bo *bo,
+		    struct kfd_ais_in_args *in, struct kfd_process_device *pdd,
+		    uint64_t *size_copied);
 
 /* Debugfs */
 #if defined(CONFIG_DEBUG_FS)

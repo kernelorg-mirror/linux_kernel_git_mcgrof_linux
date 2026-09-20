@@ -313,6 +313,16 @@ int amdgpu_amdkfd_reset_mes_queue(struct amdgpu_device *adev,
 	(&((struct amdgpu_fpriv *)					\
 		((struct drm_file *)(drm_priv))->driver_priv)->vm)
 
+int amdgpu_amdkfd_gpuvm_pin_bo(struct amdgpu_bo *bo, u32 domain);
+void amdgpu_amdkfd_gpuvm_unpin_bo(struct amdgpu_bo *bo);
+int amdgpu_amdkfd_gpuvm_get_sg_table(struct amdgpu_device *adev,
+		struct amdgpu_bo *bo, uint32_t flags,
+		uint64_t offset, uint64_t size,
+		struct device *dma_dev, enum dma_data_direction dir,
+		struct sg_table **ret_sg);
+void amdgpu_amdkfd_gpuvm_put_sg_table(struct amdgpu_bo *bo,
+		struct device *dma_dev, enum dma_data_direction dir,
+		struct sg_table *sg);
 int amdgpu_amdkfd_gpuvm_acquire_process_vm(struct amdgpu_device *adev,
 					struct amdgpu_vm *avm,
 					void **process_info,
