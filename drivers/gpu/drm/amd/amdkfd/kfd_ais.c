@@ -372,20 +372,12 @@ void kfd_ais_deinit(struct amdgpu_device *adev)
 
 static int kfd_ais_init_attr(struct attribute *attr, struct pci_dev *pdev, bool is_read)
 {
-	char *filename = kzalloc(MAX_SYSFS_FILENAME_LEN, GFP_KERNEL);
-	char *suffix;
+	const char *suffix = is_read ? "PCI_in" : "PCI_out";
+	char *filename;
 
+	filename = kasprintf(GFP_KERNEL, "%s:%s", pci_name(pdev), suffix);
 	if (!filename)
 		return -ENOMEM;
-
-	if (is_read)
-		suffix = "PCI_in";
-	else
-		suffix = "PCI_out";
-
-	snprintf(filename, MAX_SYSFS_FILENAME_LEN,
-		"%04x:%02x:%02x.%d:%s", pci_domain_nr(pdev->bus), pdev->bus->number,
-		PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn), suffix);
 
 	attr->name = filename;
 	attr->mode = KFD_SYSFS_FILE_MODE;
