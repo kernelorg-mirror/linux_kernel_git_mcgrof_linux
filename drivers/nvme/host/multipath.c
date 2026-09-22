@@ -245,6 +245,9 @@ bool nvme_mpath_clear_current_path(struct nvme_ns *ns)
 	bool changed = false;
 	int node;
 
+	if (ns == rcu_access_pointer(head->dmabuf_path))
+		rcu_assign_pointer(head->dmabuf_path, NULL);
+
 	for_each_node(node) {
 		if (ns == rcu_access_pointer(head->current_path[node])) {
 			rcu_assign_pointer(head->current_path[node], NULL);
@@ -548,6 +551,20 @@ static void nvme_ns_head_submit_bio(struct bio *bio)
 
 	srcu_idx = srcu_read_lock(&head->srcu);
 	ns = nvme_find_path(head);
+	if (unlikely(ns && op_is_dmabuf(bio->bi_opf) &&
+		     ns != srcu_dereference(head->dmabuf_path, &head->srcu))) {
+		/*
+		 * The dma-buf was mapped for the path it was bound to and its
+		 * addresses mean nothing to any other one.  A path was added
+		 * or failed over since; fail the transfer rather than let the
+		 * wrong device follow those addresses.
+		 */
+		dev_warn_ratelimited(dev,
+			"dma-buf I/O cannot follow a path change - failing I/O\n");
+		bio_io_error(bio);
+		srcu_read_unlock(&head->srcu, srcu_idx);
+		return;
+	}
 	if (likely(ns)) {
 		bio_set_dev(bio, ns->disk->part0);
 		/*
@@ -623,9 +640,66 @@ static int nvme_ns_head_report_zones(struct gendisk *disk, sector_t sector,
 #define nvme_ns_head_report_zones	NULL
 #endif /* CONFIG_BLK_DEV_ZONED */
 
+/*
+ * The single path of @head, or NULL when it has several or none.  A dma-buf
+ * is attached to one device when the buffer is registered and every transfer
+ * reuses that mapping, so it can only be offered when there is exactly one
+ * device to bind to.
+ */
+struct nvme_ns *nvme_mpath_only_path(struct nvme_ns_head *head)
+{
+	struct nvme_ns *ns, *only = NULL;
+
+	list_for_each_entry_srcu(ns, &head->list, siblings,
+				 srcu_read_lock_held(&head->srcu)) {
+		if (only)
+			return NULL;
+		only = ns;
+	}
+	return only;
+}
+
+/*
+ * Bind a dma-buf I/O context to a path.
+ *
+ * The other head operations pick a path per call, so a path that changes
+ * between calls costs nothing.  A dma-buf is different: the importer attaches
+ * it to one device when the buffer is registered and every transfer reuses
+ * that mapping, whose addresses are only valid for that device.  A path is
+ * chosen per bio and per NUMA node, so a head with more than one path has no
+ * single device to bind to and cannot offer this.
+ *
+ * Bind when there is exactly one path, and record it so that
+ * nvme_ns_head_submit_bio() can keep dma-buf traffic on it if another path
+ * shows up later.
+ */
+static int nvme_ns_head_init_dma_buf_io_ctx(struct block_device *bdev,
+		struct dma_buf_io_ctx *ctx)
+{
+	struct nvme_ns_head *head = bdev->bd_disk->private_data;
+	struct nvme_ns *path;
+	int srcu_idx, ret;
+
+	srcu_idx = srcu_read_lock(&head->srcu);
+
+	path = nvme_mpath_only_path(head);
+	if (!path || !path->disk || !disk_supports_dma_buf_io(path->disk)) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+
+	ret = path->disk->fops->init_dma_buf_io_ctx(path->disk->part0, ctx);
+	if (!ret)
+		rcu_assign_pointer(head->dmabuf_path, path);
+out:
+	srcu_read_unlock(&head->srcu, srcu_idx);
+	return ret;
+}
+
 const struct block_device_operations nvme_ns_head_ops = {
 	.owner		= THIS_MODULE,
 	.submit_bio	= nvme_ns_head_submit_bio,
+	.init_dma_buf_io_ctx = nvme_ns_head_init_dma_buf_io_ctx,
 	.open		= nvme_ns_head_open,
 	.release	= nvme_ns_head_release,
 	.ioctl		= nvme_ns_head_ioctl,

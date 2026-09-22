@@ -597,6 +597,14 @@ struct nvme_ns_head {
 #define NVME_NSHEAD_DISK_LIVE		0
 #define NVME_NSHEAD_QUEUE_IF_NO_PATH	1
 #define NVME_NSHEAD_CDEV_LIVE		2
+	/*
+	 * The path a dma-buf I/O context was bound to.  A dma-buf mapping is
+	 * made for one device when the buffer is registered and reused for
+	 * every transfer, while a path is picked per bio, so dma-buf I/O has
+	 * to stay on the path it was bound to.  NULL until a context is
+	 * created.
+	 */
+	struct nvme_ns __rcu_guarded	*dmabuf_path;
 	struct nvme_ns __rcu_guarded	*current_path[];
 #endif
 };
@@ -1086,6 +1094,7 @@ void nvme_mpath_update(struct nvme_ctrl *ctrl);
 void nvme_mpath_uninit(struct nvme_ctrl *ctrl);
 void nvme_mpath_stop(struct nvme_ctrl *ctrl);
 bool nvme_mpath_clear_current_path(struct nvme_ns *ns);
+struct nvme_ns *nvme_mpath_only_path(struct nvme_ns_head *head);
 void nvme_mpath_revalidate_paths(struct nvme_ns_head *head);
 void nvme_mpath_clear_ctrl_paths(struct nvme_ctrl *ctrl);
 void nvme_mpath_remove_disk(struct nvme_ns_head *head);
