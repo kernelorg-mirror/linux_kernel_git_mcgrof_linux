@@ -1628,6 +1628,17 @@ struct block_device_operations {
 int bdev_init_dma_buf_io_ctx(struct file *file, struct block_device *bdev,
 			     struct dma_buf_io_ctx *ctx);
 
+/*
+ * A dma-buf backed transfer needs the driver to attach the buffer to the
+ * device that will perform the DMA, which it does through
+ * ->init_dma_buf_io_ctx.  A driver without that method can never carry one,
+ * however large its other limits say a request may be.
+ */
+static inline bool disk_supports_dma_buf_io(struct gendisk *disk)
+{
+	return disk->fops->init_dma_buf_io_ctx != NULL;
+}
+
 #ifdef CONFIG_COMPAT
 extern int blkdev_compat_ptr_ioctl(struct block_device *, blk_mode_t,
 				      unsigned int, unsigned long);

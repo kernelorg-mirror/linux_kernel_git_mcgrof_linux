@@ -949,7 +949,7 @@ int bdev_init_dma_buf_io_ctx(struct file *file, struct block_device *bdev,
 
 	if (!(file->f_flags & O_DIRECT))
 		return -EINVAL;
-	if (!disk->fops->init_dma_buf_io_ctx)
+	if (!disk_supports_dma_buf_io(disk))
 		return -EOPNOTSUPP;
 	return disk->fops->init_dma_buf_io_ctx(bdev, ctx);
 }

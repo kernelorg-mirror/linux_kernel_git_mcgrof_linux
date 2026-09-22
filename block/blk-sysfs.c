@@ -261,7 +261,20 @@ static ssize_t queue_##_field##_show(struct gendisk *disk, char *page)	\
 
 QUEUE_SYSFS_LIMIT_SHOW_SECTORS_TO_KB(max_sectors)
 QUEUE_SYSFS_LIMIT_SHOW_SECTORS_TO_KB(max_hw_sectors)
-QUEUE_SYSFS_LIMIT_SHOW_SECTORS_TO_KB(max_hw_dmabuf_sectors)
+
+/*
+ * A stacking driver inherits this ceiling through blk_stack_limits() without
+ * having a DMA device to attach a dma-buf to, so report it only where one can
+ * be attached.  Zero already means "no dma-buf ceiling" to get_max_io_size().
+ */
+static ssize_t queue_max_hw_dmabuf_sectors_show(struct gendisk *disk, char *page)
+{
+	if (!disk_supports_dma_buf_io(disk))
+		return queue_var_show(0, page);
+
+	return queue_var_show(disk->queue->limits.max_hw_dmabuf_sectors >> 1,
+			      page);
+}
 
 #define QUEUE_SYSFS_SHOW_CONST(_name, _val)				\
 static ssize_t queue_##_name##_show(struct gendisk *disk, char *page)	\
