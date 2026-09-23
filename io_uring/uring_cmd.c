@@ -296,7 +296,13 @@ int io_uring_cmd_import_fixed(u64 ubuf, unsigned long len, int rw,
 	if (WARN_ON_ONCE(!(ioucmd->flags & IORING_URING_CMD_FIXED)))
 		return -EINVAL;
 
-	return io_import_reg_buf(req, iter, ubuf, len, rw, issue_flags);
+	/*
+	 * Allow a registered dma-buf, as the read/write path does.  A command
+	 * that reaches a driver which cannot take a dma-buf backed iterator
+	 * fails there rather than here.
+	 */
+	return __io_import_reg_buf(req, iter, ubuf, len, rw, issue_flags,
+				   IO_REGBUF_IMPORT_ALLOW_DMABUF);
 }
 EXPORT_SYMBOL_GPL(io_uring_cmd_import_fixed);
 
