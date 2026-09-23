@@ -61,6 +61,7 @@
 #include <linux/dma-heap.h>
 #include <linux/io_uring.h>
 #include <linux/memfd.h>
+#include <linux/nvme_ioctl.h>
 #include <linux/udmabuf.h>
 
 #define KSFT_PASS 0
@@ -102,6 +103,15 @@ struct ring {
 	struct io_uring_cqe *cqes;
 	void *sq_ptr, *cq_ptr;
 	size_t sq_len, cq_len;
+	size_t sqe_sz, cqe_sz;
+	/*
+	 * Non-zero when the target is an NVMe character device, in which case
+	 * every transfer goes out as a passthrough command instead of a
+	 * READ_FIXED / WRITE_FIXED.  The command carries an LBA and a block
+	 * count, not a byte offset and a length.
+	 */
+	uint32_t nsid;
+	unsigned lba_shift;
 };
 
 static int io_uring_setup(unsigned entries, struct io_uring_params *p)
@@ -124,16 +134,27 @@ static int ring_init(struct ring *r, unsigned entries)
 	struct io_uring_params p;
 
 	memset(&p, 0, sizeof(p));
+	/*
+	 * An NVMe command needs the 80 bytes only a 128-byte SQE has, and the
+	 * driver returns its completion in the second half of a 32-byte CQE.
+	 * It refuses the command unless both are asked for.
+	 */
+	if (r->nsid)
+		p.flags |= IORING_SETUP_SQE128 | IORING_SETUP_CQE32;
+	r->sqe_sz = r->nsid ? 2 * sizeof(struct io_uring_sqe)
+			    : sizeof(struct io_uring_sqe);
+	r->cqe_sz = r->nsid ? 2 * sizeof(struct io_uring_cqe)
+			    : sizeof(struct io_uring_cqe);
 	r->fd = io_uring_setup(entries, &p);
 	if (r->fd < 0)
 		return -errno;
 	r->sq_len = p.sq_off.array + p.sq_entries * sizeof(unsigned);
-	r->cq_len = p.cq_off.cqes + p.cq_entries * sizeof(struct io_uring_cqe);
+	r->cq_len = p.cq_off.cqes + p.cq_entries * r->cqe_sz;
 	r->sq_ptr = mmap(NULL, r->sq_len, PROT_READ | PROT_WRITE,
 			 MAP_SHARED | MAP_POPULATE, r->fd, IORING_OFF_SQ_RING);
 	r->cq_ptr = mmap(NULL, r->cq_len, PROT_READ | PROT_WRITE,
 			 MAP_SHARED | MAP_POPULATE, r->fd, IORING_OFF_CQ_RING);
-	r->sqes = mmap(NULL, p.sq_entries * sizeof(struct io_uring_sqe),
+	r->sqes = mmap(NULL, p.sq_entries * r->sqe_sz,
 		       PROT_READ | PROT_WRITE, MAP_SHARED | MAP_POPULATE, r->fd,
 		       IORING_OFF_SQES);
 	if (r->sq_ptr == MAP_FAILED || r->cq_ptr == MAP_FAILED ||
@@ -156,18 +177,36 @@ static int ring_rw_fixed(struct ring *r, int op, int fd, unsigned buf_index,
 			 uint64_t buf_addr, unsigned len, uint64_t off)
 {
 	unsigned tail = *r->sq_tail, idx = tail & *r->sq_mask;
-	struct io_uring_sqe *sqe = &r->sqes[idx];
+	struct io_uring_sqe *sqe = (void *)((char *)r->sqes + idx * r->sqe_sz);
 	struct io_uring_cqe *cqe;
 	int ret;
 
-	memset(sqe, 0, sizeof(*sqe));
-	sqe->opcode = op;
-	sqe->fd = fd;
-	sqe->addr = buf_addr;
-	sqe->len = len;
-	sqe->off = off;
-	sqe->buf_index = buf_index;
-	sqe->user_data = 1;
+	memset(sqe, 0, r->sqe_sz);
+	if (r->nsid) {
+		struct nvme_uring_cmd *c = (void *)sqe->cmd;
+
+		sqe->opcode = IORING_OP_URING_CMD;
+		sqe->fd = fd;
+		sqe->cmd_op = NVME_URING_CMD_IO;
+		sqe->uring_cmd_flags = IORING_URING_CMD_FIXED;
+		sqe->buf_index = buf_index;
+		sqe->user_data = 1;
+		c->opcode = op == IORING_OP_WRITE_FIXED ? 0x01 : 0x02;
+		c->nsid = r->nsid;
+		c->addr = buf_addr;
+		c->data_len = len;
+		c->cdw10 = (off >> r->lba_shift) & 0xffffffffu;
+		c->cdw11 = (off >> r->lba_shift) >> 32;
+		c->cdw12 = (len >> r->lba_shift) - 1;
+	} else {
+		sqe->opcode = op;
+		sqe->fd = fd;
+		sqe->addr = buf_addr;
+		sqe->len = len;
+		sqe->off = off;
+		sqe->buf_index = buf_index;
+		sqe->user_data = 1;
+	}
 	r->sq_array[idx] = idx;
 	atomic_store_explicit((_Atomic unsigned *)r->sq_tail, tail + 1,
 			      memory_order_release);
@@ -177,8 +216,15 @@ static int ring_rw_fixed(struct ring *r, int op, int fd, unsigned buf_index,
 	while (atomic_load_explicit((_Atomic unsigned *)r->cq_tail,
 				    memory_order_acquire) == *r->cq_head)
 		io_uring_enter(r->fd, 0, 1, IORING_ENTER_GETEVENTS);
-	cqe = &r->cqes[*r->cq_head & *r->cq_mask];
+	cqe = (void *)((char *)r->cqes + (*r->cq_head & *r->cq_mask) * r->cqe_sz);
 	ret = cqe->res;
+	/*
+	 * A passthrough command reports the NVMe status, zero on success,
+	 * rather than a byte count.  Report the length so a caller can check
+	 * both transports the same way.
+	 */
+	if (r->nsid && ret == 0)
+		ret = len;
 	atomic_store_explicit((_Atomic unsigned *)r->cq_head, *r->cq_head + 1,
 			      memory_order_release);
 	return ret;
@@ -303,19 +349,20 @@ int main(int argc, char **argv)
 	const char *dev, *mode;
 	size_t size = 8u << 20, map_size;
 	uint64_t off = 1ull << 30;
-	int bdev, src_fd = -1, dst_fd = -1, ret, rc = KSFT_FAIL;
+	int bdev, src_fd = -1, dst_fd = -1, witness_fd = -1, ret, rc = KSFT_FAIL;
 	struct timespec t0, t1;
 	double reg_us = 0, first_us = 0, second_us = 0;
 	uint8_t *src, *dst, *plain;
 	struct ring r;
 	struct stat st;
-	int is_dmabuf;
+	int is_dmabuf, is_chr;
 
 	if (argc < 3) {
-		fprintf(stderr, "usage: %s <bdev> <udmabuf|udmabuf-huge|sysheap|cmaheap|bvec> [size] [offset]\n",
+		fprintf(stderr, "usage: %s <bdev|/dev/ngXnY|file> <udmabuf|udmabuf-huge|sysheap|cmaheap|bvec> [size] [offset]\n",
 			argv[0]);
 		return KSFT_FAIL;
 	}
+	memset(&r, 0, sizeof(r));
 	dev = argv[1];
 	mode = argv[2];
 	if (argc > 3)
@@ -329,11 +376,54 @@ int main(int argc, char **argv)
 	 * that is absent must stay absent rather than become a file on
 	 * devtmpfs, which has no device to attach a dma-buf to.
 	 */
-	bdev = open(dev, O_RDWR | O_DIRECT | O_CLOEXEC |
+	/*
+	 * An NVMe character device takes passthrough commands rather than
+	 * read and write, and O_DIRECT means nothing to it: the payload never
+	 * goes through the page cache on that path to begin with.
+	 */
+	is_chr = stat(dev, &st) == 0 && S_ISCHR(st.st_mode);
+	bdev = open(dev, O_RDWR | O_CLOEXEC | (is_chr ? 0 : O_DIRECT) |
 		    (strncmp(dev, "/dev/", 5) ? O_CREAT : 0), 0600);
 	if (bdev < 0) {
 		perror("open target");
 		return KSFT_FAIL;
+	}
+	if (is_chr) {
+		char path[128];
+		unsigned lbs = 0;
+		const char *ns = strrchr(dev, '/');
+		FILE *f;
+		int id;
+
+		id = ioctl(bdev, NVME_IOCTL_ID);
+		if (id < 0) {
+			perror("NVME_IOCTL_ID (not an NVMe character device?)");
+			goto out;
+		}
+		r.nsid = id;
+		/* /dev/ngXnY is the character node of block device nvmeXnY. */
+		snprintf(path, sizeof(path),
+			 "/sys/block/nvme%s/queue/logical_block_size",
+			 ns ? ns + 3 : "");
+		f = fopen(path, "r");
+		if (!f || fscanf(f, "%u", &lbs) != 1 || !lbs) {
+			fprintf(stderr, "cannot read %s\n", path);
+			if (f)
+				fclose(f);
+			goto out;
+		}
+		fclose(f);
+		while ((1u << r.lba_shift) < lbs)
+			r.lba_shift++;
+		/* /dev/ngXnY and /dev/nvmeXnY are the same namespace. */
+		snprintf(path, sizeof(path), "/dev/nvme%s", ns ? ns + 3 : "");
+		witness_fd = open(path, O_RDONLY | O_DIRECT | O_CLOEXEC);
+		if (witness_fd < 0) {
+			perror("open witness block node");
+			goto out;
+		}
+		printf("passthrough target: nsid %u, %u-byte logical blocks, witness %s\n",
+		       r.nsid, lbs, path);
 	}
 	if (fstat(bdev, &st) == 0 && S_ISREG(st.st_mode)) {
 		if (argc <= 4)
@@ -489,7 +579,15 @@ int main(int argc, char **argv)
 		perror("mmap witness");
 		goto out;
 	}
-	if (pread(bdev, plain, size, off) != (ssize_t)size) {
+	/*
+	 * Read the bytes back through a path that shares nothing with the one
+	 * under test.  A character device cannot be read, so witness a
+	 * passthrough transfer through the block node of the same namespace,
+	 * which is a better independent check than reusing the same fd.
+	 */
+	if (witness_fd < 0)
+		witness_fd = bdev;
+	if (pread(witness_fd, plain, size, off) != (ssize_t)size) {
 		perror("pread witness");
 		goto out;
 	}
