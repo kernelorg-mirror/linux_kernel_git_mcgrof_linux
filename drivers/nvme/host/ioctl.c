@@ -660,6 +660,24 @@ int nvme_ioctl(struct block_device *bdev, blk_mode_t mode,
 	return nvme_ns_ioctl(ns, cmd, argp, flags, open_for_write);
 }
 
+/*
+ * Bind a dma-buf I/O context to the controller behind this namespace
+ * character device, so a registered dma-buf can be used as the payload of an
+ * NVMe passthrough command.  The block device gets this through
+ * bdev_init_dma_buf_io_ctx(); a character device has no block_device, so the
+ * file operation is implemented directly.
+ */
+int nvme_ns_chr_init_dma_buf_io_ctx(struct file *file,
+				    struct dma_buf_io_ctx *ctx)
+{
+	struct nvme_ns *ns =
+		container_of(file_inode(file)->i_cdev, struct nvme_ns, cdev);
+
+	if (!ns->ctrl->ops->init_dma_buf_io_ctx)
+		return -EOPNOTSUPP;
+	return ns->ctrl->ops->init_dma_buf_io_ctx(ns->ctrl, ctx);
+}
+
 long nvme_ns_chr_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct nvme_ns *ns =
@@ -771,6 +789,33 @@ int nvme_ns_head_ioctl(struct block_device *bdev, blk_mode_t mode,
 
 	ret = nvme_ns_ioctl(ns, cmd, argp, flags, open_for_write);
 out_unlock:
+	srcu_read_unlock(&head->srcu, srcu_idx);
+	return ret;
+}
+
+/*
+ * The multipath equivalent.  A dma-buf is attached to one device when the
+ * buffer is registered and every command reuses that mapping, while a path is
+ * chosen per command, so only bind when there is a single path to bind to.
+ */
+int nvme_ns_head_chr_init_dma_buf_io_ctx(struct file *file,
+					 struct dma_buf_io_ctx *ctx)
+{
+	struct cdev *cdev = file_inode(file)->i_cdev;
+	struct nvme_ns_head *head =
+		container_of(cdev, struct nvme_ns_head, cdev);
+	struct nvme_ns *path;
+	int srcu_idx, ret;
+
+	srcu_idx = srcu_read_lock(&head->srcu);
+
+	path = nvme_mpath_only_path(head);
+	if (!path || !path->ctrl->ops->init_dma_buf_io_ctx) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+	ret = path->ctrl->ops->init_dma_buf_io_ctx(path->ctrl, ctx);
+out:
 	srcu_read_unlock(&head->srcu, srcu_idx);
 	return ret;
 }

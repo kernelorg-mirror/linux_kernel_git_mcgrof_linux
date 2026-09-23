@@ -1038,6 +1038,10 @@ void nvme_cdev_del(struct cdev *cdev, struct device *cdev_device);
 int nvme_ioctl(struct block_device *bdev, blk_mode_t mode,
 		unsigned int cmd, unsigned long arg);
 long nvme_ns_chr_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
+int nvme_ns_chr_init_dma_buf_io_ctx(struct file *file,
+				    struct dma_buf_io_ctx *ctx);
+int nvme_ns_head_chr_init_dma_buf_io_ctx(struct file *file,
+					 struct dma_buf_io_ctx *ctx);
 int nvme_ns_head_ioctl(struct block_device *bdev, blk_mode_t mode,
 		unsigned int cmd, unsigned long arg);
 long nvme_ns_head_chr_ioctl(struct file *file, unsigned int cmd,
