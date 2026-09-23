@@ -459,12 +459,23 @@ int blk_rq_append_bio(struct request *rq, struct bio *bio)
 }
 EXPORT_SYMBOL(blk_rq_append_bio);
 
-/* Prepare bio for passthrough IO given ITER_BVEC iter */
+/* Prepare bio for passthrough IO given an ITER_BVEC or ITER_DMABUF_MAP iter */
 static int blk_rq_map_user_bvec(struct request *rq, const struct iov_iter *iter)
 {
-	unsigned int max_bytes = rq->q->limits.max_hw_sectors << SECTOR_SHIFT;
+	const struct queue_limits *lim = &rq->q->limits;
+	unsigned int max_sectors = lim->max_hw_sectors;
+	unsigned int max_bytes;
 	struct bio *bio;
 	int ret;
+
+	/*
+	 * A dma-buf backed request is bounded by its own hardware ceiling,
+	 * the one get_max_io_size() applies when a bio is split; holding it
+	 * to max_hw_sectors here would refuse a command the device can do.
+	 */
+	if (iov_iter_is_dmabuf_map(iter) && lim->max_hw_dmabuf_sectors)
+		max_sectors = lim->max_hw_dmabuf_sectors;
+	max_bytes = max_sectors << SECTOR_SHIFT;
 
 	if (!iov_iter_count(iter) || iov_iter_count(iter) > max_bytes)
 		return -EINVAL;
@@ -505,6 +516,18 @@ int blk_rq_map_user_iov(struct request_queue *q, struct request *rq,
 	struct bio *bio = NULL;
 	struct iov_iter i;
 	int ret = -EINVAL;
+
+	/*
+	 * A dma-buf has no pages and no kernel mapping, so none of the
+	 * fallbacks below can apply to one: it cannot be copied into a bounce
+	 * buffer and it is not user backed.  Decide it first, and let the
+	 * mapping fail rather than quietly turn into a copy.
+	 */
+	if (iov_iter_is_dmabuf_map(iter)) {
+		if (map_data)
+			return -EINVAL;
+		return blk_rq_map_user_bvec(rq, iter);
+	}
 
 	if (map_data)
 		copy = true;
