@@ -33,7 +33,8 @@ static void dma_buf_io_map_release_work(struct work_struct *work)
 	dma_resv_unlock(dmabuf->resv);
 
 	percpu_ref_exit(&map->refs);
-	kfree(map);
+	/* a driver may size its map with kvmalloc; kvfree covers both */
+	kvfree(map);
 
 	dma_buf_io_put_ctx(ctx);
 }
