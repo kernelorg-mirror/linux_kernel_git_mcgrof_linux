@@ -2622,7 +2622,13 @@ static struct dma_buf_io_map *nvme_dma_buf_io_map(struct dma_buf_io_ctx *ctx)
 
 	dma_resv_assert_held(ctx->dmabuf->resv);
 
-	map = kmalloc_flex(*map, dma_list, nr_entries);
+	/*
+	 * One entry per controller page of the whole buffer: 2 MiB of
+	 * addresses for a 1 GiB dma-buf. The list is only ever read by the
+	 * CPU to build each request's PRPs, so it need not be physically
+	 * contiguous, and an order-9 kmalloc fails on a fragmented host.
+	 */
+	map = kvmalloc_flex(*map, dma_list, nr_entries);
 	if (!map)
 		return ERR_PTR(-ENOMEM);
 
@@ -2665,7 +2671,7 @@ static struct dma_buf_io_map *nvme_dma_buf_io_map(struct dma_buf_io_ctx *ctx)
 err:
 	if (sgt)
 		dma_buf_unmap_attachment(attach, sgt, ctx->dir);
-	kfree(map);
+	kvfree(map);
 	return ERR_PTR(ret);
 }
 
