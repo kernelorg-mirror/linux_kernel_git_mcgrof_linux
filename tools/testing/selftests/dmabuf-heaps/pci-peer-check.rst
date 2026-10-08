@@ -13,6 +13,7 @@ Examples::
   ./pci-peer-check.py --gpu 0000:01:00.0 --nvme 0000:02:00.0
   sudo ./pci-peer-check.py --gpu 01:00.0 --nvme 02:00.0 --json
   ./pci-peer-check.py --gpu 01:00.0 --nvme 02:00.0 --require nvidia
+  ./pci-peer-check.py --gpu 01:00.0 --nvme 02:00.0 --verbose
   python3 pci-peer-check-test.py
 
 Four-digit domains, zero-padded eight-digit domains from nvidia-smi, and omitted
@@ -68,7 +69,7 @@ Limits
 These are source-based topology predictions, not observations of the live
 attachment flag or a guarantee of DMA-BUF export, successful DMA mapping,
 physical PCI forwarding, absence of staging, or byte-correct storage I/O.
-JSON always contains ``transfer_tested: false``. Linux's running build option is
+Without a probe, JSON contains ``transfer_tested: false``. Linux's running build option is
 read from /boot/config-<release> or /proc/config.gz; a disabled option rejects,
 and an unavailable option makes otherwise eligible topology unknown.
 
@@ -87,6 +88,84 @@ FORCE_PCIE, skip_p2p_check, Tegra/C2C, importer peer2peer/MMIO support, buffer
 attributes and GPU-export API support are outside its scope. FORCE_PCIE uses a
 different coherent-platform/IOMMU-group check. An eligible normal gate does not
 imply that a CUDA DMA-BUF export API is supported by the selected GPU.
+
+Verbose placement and fallback explanations
+-------------------------------------------
+
+``-v`` / ``--verbose`` explains the selected policies and the separate export,
+placement and transfer contracts. With ``--json``, explanations are included
+as an array in the report. Linux's THRU_HOST_BRIDGE map type means PCI forwarding
+through the root complex, not host payload memory.
+
+For AMD, a rejected distance helper predicts that peer2peer is cleared and
+pin/map may migrate the backing BO to host TT/GTT. This is labeled **RAM FALLBACK
+PREDICTED**, never observed. Even eligible topology cannot guarantee VRAM:
+the importer must permit peers, other attachments can constrain placement,
+and BO attributes/driver behavior matter. Observe the actual attachment,
+placement/migration and exported mapping before reporting an actual RAM route.
+Aggregate VRAM/GTT counters alone are insufficient allocation evidence.
+
+A separate CPU bounce buffer stages each transfer with copies to/from GPU
+memory. AMD migration instead changes the shared allocation's backing memory.
+Both can put host RAM in the payload path, but they are different mechanisms.
+CPU metadata or independent verification copies do not by themselves imply a
+payload RAM fallback. A Vulkan allocation on AMD uses the AMD exporter policy
+and does not repair peer topology rejected by that driver.
+
+Explicit Vulkan/RM route probe
+------------------------------
+
+An optional executable helper can test the NVIDIA alternative allocation path::
+
+  ./pci-peer-check.py --gpu 01:00.0 --nvme 02:00.0 --verbose \
+      --probe-vulkan-rm /absolute/path/to/owned-route-helper \
+      --scratch-dir /path/to/owned/nvme/scratch
+
+This mode is explicitly opt-in and requires the exact 615.71.09 profile. The
+default remains a topology diagnostic. The helper is separate because allocation,
+tensor/FD ownership, synchronization, and version-coupled RM ABI bindings are
+not provided by Python's standard library. Use a reviewed helper: it is an
+executable chosen by the caller, not a sandboxed plugin. It must check GPU
+availability/UUID/BDF, verify the scratch filesystem resolves to the selected
+NVMe BDF, and operate only on new owned regular files with bounded extents.
+No driver/ACS/IOMMU changes, raw-device writes, existing-file replacement or
+automatic switch after an in-flight failure are part of this contract.
+
+The tested allocation route is Vulkan device-local non-host-visible memory
+exported as OPAQUE_FD, CUDA mapping of that same owned object, then NVIDIA RM
+core DMA-BUF export (``nv_dmabuf``) for storage. Vulkan's DRM DMA_BUF export is
+a different exporter. This alternative does not re-export an arbitrary existing
+Torch pointer, enable cuFile/GDS, or silently use CPU payload memory. Native
+CUDA export errors must be reported separately. An explicit alternative test
+is not evidence of an implemented automatic application fallback.
+
+The helper receives ``--gpu BDF --nvme BDF --scratch-dir DIRECTORY`` and emits
+one JSON object to stdout, with diagnostics sent to its retained receipts or
+stderr. Version 1 requires ``schema: 1``, exact ``gpu``/``nvme``,
+``status`` (passed/failed/unknown/unsupported), boolean ``transfer_tested``, and
+``ram_fallback`` (observed/not-observed/unknown). A pass additionally requires:
+
+* ``route: vulkan-opaque-cuda-rm-dmabuf``;
+* ``payload_memory: gpu-device-local`` and ``exporter: nv_dmabuf``;
+* exact running ``driver`` and ``kernel`` identities;
+* ``transfer_tested: true``, ``byte_verified: true``;
+* positive integer ``writes_verified`` and ``reads_verified``;
+* ``ram_fallback: not-observed`` supported by allocation/export evidence.
+
+Exit zero means passed; every other result requires a nonzero exit. Keep
+native export status, allocation/FD identities, synchronization, actual CQEs,
+byte/guard verification, teardown and all failures in helper receipts. A
+passing JSON object is a helper report, not an independent physical-bus audit.
+Failed/unknown RAM observations must never be relabeled as a GPU-only pass.
+
+The checker retains helper stdout in a new file under scratch and checks target
+identities and both-direction byte evidence before reporting a pass. If the
+helper times out it is not killed; PID/output are reported, RAM placement and
+transfer progress are unknown, and no further provider is tried. A helper with
+unknown GPU/I/O completion must likewise retain its owners and stop admission.
+Probe failure returns 1, unknown/unsupported returns 3, and malformed results
+return 2. ``--require`` still enforces the independently predicted policy and
+cannot turn a failed probe into success.
 
 Relationship to gdscheck
 ------------------------

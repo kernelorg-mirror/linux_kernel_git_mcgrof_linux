@@ -8,6 +8,7 @@ from pathlib import Path
 import struct
 import tempfile
 import unittest
+import subprocess
 from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
@@ -186,6 +187,85 @@ class PolicyTest(unittest.TestCase):
                 peer.query_chipset('615.71.09')
             self.assertEqual(ioctl.call_count, 1)
             close.assert_called_once_with(9)
+
+
+class RouteTest(unittest.TestCase):
+    def report(self, driver='nvidia', linux='eligible'):
+        return dict(gpu=dict(bdf='0000:01:00.0', driver=driver),
+                    nvme=dict(bdf='0000:02:00.0'), kernel='test-kernel',
+                    nvidia=dict(version='615.71.09'),
+                    linux_p2pdma=dict(status=linux), nvidia_dmabuf=dict(status='eligible'))
+
+    def receipt(self):
+        return dict(schema=1, gpu='0000:01:00.0', nvme='0000:02:00.0',
+                    status='passed', driver='615.71.09', kernel='test-kernel',
+                    route='vulkan-opaque-cuda-rm-dmabuf', payload_memory='gpu-device-local',
+                    exporter='nv_dmabuf', transfer_tested=True, ram_fallback='not-observed',
+                    byte_verified=True, writes_verified=9, reads_verified=1)
+
+    def test_explanations_distinguish_predicted_migration_from_observation(self):
+        text = '\n'.join(peer.route_explanations(self.report(driver='amdgpu', linux='rejected')))
+        self.assertIn('RAM FALLBACK PREDICTED', text)
+        self.assertIn('No live allocation was inspected', text)
+        self.assertIn('same AMD DMA-BUF attachment policy', text)
+        self.assertIn('not a copy into host RAM', text)
+
+    def test_eligible_amd_does_not_promise_no_ram(self):
+        self.assertIn('NOT DETERMINED', '\n'.join(peer.route_explanations(self.report(driver='amdgpu'))))
+
+    def test_receipt_exact_device_and_both_directions(self):
+        self.assertEqual(peer.validate_probe(self.receipt(), self.report())['status'], 'passed')
+        for key, value in (('gpu', '0000:03:00.0'), ('nvme', '0000:04:00.0'),
+                           ('driver', '999.00'), ('kernel', 'other-kernel'),
+                           ('writes_verified', 0), ('reads_verified', 0),
+                           ('byte_verified', False), ('transfer_tested', False),
+                           ('exporter', 'drm'), ('payload_memory', 'host-gtt'),
+                           ('ram_fallback', 'observed')):
+            receipt = dict(self.receipt(), **{key: value})
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                peer.validate_probe(receipt, self.report())
+
+    def test_failed_ram_observation_does_not_become_gpu_only_pass(self):
+        receipt = dict(self.receipt(), status='failed', ram_fallback='observed',
+                       payload_memory='host-gtt')
+        report = dict(self.report(), vulkan_rm_probe=peer.validate_probe(receipt, self.report()))
+        self.assertIn('RAM fallback: observed', '\n'.join(peer.route_explanations(report)))
+
+    def test_helper_version_guard_before_launch(self):
+        report = self.report()
+        report['nvidia']['version'] = '999.00'
+        with patch.object(peer.subprocess, 'Popen') as launch, self.assertRaises(ValueError):
+            peer.probe_vulkan_rm(report, Path('/missing'), Path('/missing'))
+        launch.assert_not_called()
+
+    def test_helper_protocol_and_exit_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            helper = Path(directory) / 'helper'
+            helper.write_text('#!/usr/bin/env python3\nimport json\nprint(' +
+                              repr(json.dumps(self.receipt())) + ')\n')
+            helper.chmod(0o700)
+            receipt = peer.probe_vulkan_rm(self.report(), helper, Path(directory))
+            self.assertEqual(receipt['status'], 'passed')
+            self.assertTrue(Path(receipt['helper_output']).exists())
+            helper.write_text(helper.read_text() + 'raise SystemExit(1)\n')
+            with self.assertRaisesRegex(ValueError, 'exit status disagrees'):
+                peer.probe_vulkan_rm(self.report(), helper, Path(directory))
+
+    def test_timeout_keeps_process_and_reports_uncertain_transfer(self):
+        with tempfile.TemporaryDirectory() as directory:
+            helper = Path(directory) / 'helper'
+            helper.write_text('unused')
+            helper.chmod(0o700)
+            with patch.object(peer.subprocess, 'Popen') as launch:
+                process = launch.return_value
+                process.pid = 123
+                process.wait.side_effect = subprocess.TimeoutExpired('helper', 60)
+                receipt = peer.probe_vulkan_rm(self.report(), helper, Path(directory))
+                self.assertEqual(receipt['status'], 'unknown')
+                self.assertIsNone(receipt['transfer_tested'])
+                self.assertEqual(receipt['retained_pid'], 123)
+                process.kill.assert_not_called()
+                process.terminate.assert_not_called()
 
 
 if __name__ == '__main__':

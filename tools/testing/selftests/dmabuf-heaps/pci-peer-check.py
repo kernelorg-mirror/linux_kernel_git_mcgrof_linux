@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
-"""Predict PCI peer topology policy, without allocating GPU memory or doing I/O.
+"""Predict PCI peer policy; optionally test an owned Vulkan/RM storage route.
 
-This is a source-pinned policy model, not an attachment or data integrity test.
+Default mode allocates no GPU memory and performs no storage I/O.
 See pci-peer-check.rst for assumptions and the NVIDIA ABI version boundary.
 """
 
@@ -16,7 +16,9 @@ import platform
 from pathlib import Path
 import re
 import struct
+import subprocess
 import sys
+import tempfile
 
 
 HERE = Path(__file__).resolve().parent
@@ -354,18 +356,157 @@ def diagnose(gpu_bdf, nvme_bdf, sysfs, proc, profile, query=True):
     return report
 
 
+def route_explanations(report):
+    """Keep topology permission, possible placement and observed I/O distinct."""
+    linux, nvidia = report['linux_p2pdma'], report['nvidia_dmabuf']
+    explanations = [
+        'Topology eligibility permits a source-modeled peer attachment; it does '
+        'not prove export support, current buffer placement or byte-correct I/O.',
+        'THRU_HOST_BRIDGE describes PCI forwarding through a root complex, '
+        'not a copy into host RAM.',
+    ]
+    if report['gpu']['driver'] == 'amdgpu':
+        explanations.append(
+            'RAM FALLBACK PREDICTED: AMD clears peer2peer when the distance '
+            'helper rejects this pair; pin/map may move the backing BO from '
+            'VRAM into host TT/GTT. No live allocation was inspected.' if
+            linux['status'] == 'rejected' else
+            'AMD RAM fallback is NOT DETERMINED. An eligible topology can '
+            'permit VRAM, but importer flags, other attachments, BO attributes '
+            'and placement must be checked on the actual buffer.')
+        explanations.append(
+            'A Vulkan AMD allocation uses the same AMD DMA-BUF attachment '
+            'policy; it does not repair rejected peer topology. The NVIDIA '
+            'Vulkan/OPAQUE_FD/CUDA/RM provider does not apply to AMD.')
+    else:
+        explanations.append(
+            'NVIDIA normal DMA-BUF topology gate: ' + nvidia['status'] + '. '
+            'Its attach rejection has no AMD-style automatic GTT migration. '
+            'Native CUDA export support is a separate capability.')
+    explanations.extend([
+        'VULKAN ALLOCATION ALTERNATIVE: allocate owned device-local Vulkan '
+        'memory, export OPAQUE_FD, map the same object into CUDA, then export '
+        'the final nv_dmabuf through NVIDIA RM. This is not Vulkan DRM DMA_BUF '
+        'export or re-export of an existing arbitrary Torch pointer.',
+        'Vulkan/RM is experimental and version guarded. It does not force '
+        'topology permission, enable cuFile/GDS, or silently choose host RAM.',
+        'A RAM bounce buffer is a separate host staging buffer copied to/from '
+        'GPU memory. AMD BO migration changes the backing placement instead; '
+        'both can involve host payload RAM. CPU metadata and verification '
+        'copies alone are not a payload fallback.',
+    ])
+    probe = report.get('vulkan_rm_probe')
+    if probe:
+        explanations.append(
+            'Vulkan/RM probe: ' + probe['status'] + '; RAM fallback: ' +
+            probe['ram_fallback'] + '. This is an explicitly requested '
+            'alternative-allocation test, not automatic runtime error recovery. '
+            'Helper receipts are not a physical PCIe bus audit.')
+        native = probe.get('native_cuda_export')
+        if isinstance(native, dict) and native.get('results') == [801, 801]:
+            explanations.append(
+                'Native CUDA export returned CUDA_ERROR_NOT_SUPPORTED (801) '
+                'with both default and PCIe mapping flags. Eligible topology '
+                'does not override that export refusal; the Vulkan/RM test '
+                'allocates and exports a different owned object.')
+        if probe['status'] == 'passed':
+            explanations.append(
+                f"Byte verification: {probe['writes_verified']} writes and "
+                f"{probe['reads_verified']} reads. The helper reports owned "
+                'device-local memory and nv_dmabuf export. This qualifies '
+                'its bounded transfer test, not LMCache/P/D, arbitrary '
+                'concurrency, reset recovery or performance.')
+    return explanations
+
+
+def validate_probe(value, report):
+    """Validate the external helper's versioned result, never infer success."""
+    if not isinstance(value, dict) or value.get('schema') != 1:
+        raise ValueError('route helper returned an unsupported result schema')
+    for key in ('gpu', 'nvme'):
+        if value.get(key) != report[key]['bdf']:
+            raise ValueError('route helper result does not match selected ' + key)
+    if value.get('status') not in ('passed', 'failed', 'unknown', 'unsupported'):
+        raise ValueError('route helper returned an invalid status')
+    if value.get('ram_fallback') not in ('observed', 'not-observed', 'unknown'):
+        raise ValueError('route helper must report RAM fallback evidence state')
+    if type(value.get('transfer_tested')) is not bool:
+        raise ValueError('route helper omitted transfer_tested')
+    if value['status'] == 'passed':
+        if (value.get('route') != 'vulkan-opaque-cuda-rm-dmabuf' or
+                value.get('payload_memory') != 'gpu-device-local' or
+                value.get('exporter') != 'nv_dmabuf' or
+                value.get('driver') != report['nvidia']['version'] or
+                value.get('kernel') != report['kernel'] or
+                not value['transfer_tested'] or
+                value.get('byte_verified') is not True):
+            raise ValueError('passing route helper lacks allocation/export/byte evidence')
+        for key in ('writes_verified', 'reads_verified'):
+            if type(value.get(key)) is not int or value[key] <= 0:
+                raise ValueError('passing route helper must verify both directions')
+        if value['ram_fallback'] != 'not-observed':
+            raise ValueError('GPU-only route pass cannot claim observed/unknown RAM fallback')
+    return value
+
+
+def probe_vulkan_rm(report, helper, scratch):
+    """An opt-in executable helper owns ABI, allocation, extents and teardown."""
+    if (report['gpu']['driver'] != 'nvidia' or
+            report['nvidia']['version'] != '615.71.09'):
+        raise ValueError('Vulkan/RM probe requires NVIDIA driver profile 615.71.09')
+    helper = helper.resolve(strict=True)
+    scratch = scratch.resolve(strict=True)
+    if not helper.is_file() or not os.access(helper, os.X_OK) or not scratch.is_dir():
+        raise ValueError('probe helper must be executable; scratch must be a directory')
+    # File-backed stdout remains available if a helper retains live DMA owners
+    # on timeout. Never kill it or leave a pipe whose closure causes SIGPIPE.
+    fd, name = tempfile.mkstemp(prefix='pci-peer-vulkan-rm-', suffix='.json', dir=scratch)
+    with os.fdopen(fd, 'w') as output:
+        process = subprocess.Popen(
+            [str(helper), '--gpu', report['gpu']['bdf'], '--nvme', report['nvme']['bdf'],
+             '--scratch-dir', str(scratch)], stdout=output, start_new_session=True)
+        try:
+            code = process.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            return dict(schema=1, gpu=report['gpu']['bdf'], nvme=report['nvme']['bdf'],
+                        status='unknown', transfer_tested=None, ram_fallback='unknown',
+                        reason='helper timeout; completion unknown, process retained',
+                        retained_pid=process.pid, helper_output=name)
+    try:
+        value = validate_probe(json.loads(Path(name).read_text()), report)
+    except (OSError, ValueError) as error:
+        raise ValueError(f'invalid route helper output (retained at {name}): {error}') from error
+    if (code == 0) != (value['status'] == 'passed'):
+        raise ValueError('route helper exit status disagrees with result; output: ' + name)
+    value['helper_output'] = name
+    return value
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gpu', required=True, help='GPU PCI address, e.g. 0000:01:00.0')
     parser.add_argument('--nvme', required=True, help='NVMe controller PCI address')
     parser.add_argument('--json', action='store_true', help='emit full machine-readable evidence')
+    parser.add_argument('-v', '--verbose', action='store_true',
+                        help='explain topology permission, Vulkan alternative and RAM fallback')
+    parser.add_argument('--probe-vulkan-rm', type=Path, metavar='HELPER',
+                        help='explicitly run an experimental owned-allocation R/W helper')
+    parser.add_argument('--scratch-dir', type=Path,
+                        help='existing directory for new probe files; required with --probe-vulkan-rm')
     parser.add_argument('--no-nvidia-query', action='store_true', help='skip read-only RM chipset query')
     parser.add_argument('--require', choices=('linux', 'nvidia'), help='exit 0 eligible, 1 rejected, 3 unknown/not-applicable')
     args = parser.parse_args()
+    if bool(args.probe_vulkan_rm) != bool(args.scratch_dir):
+        parser.error('--probe-vulkan-rm and --scratch-dir must be supplied together')
     try:
         profile = json.loads((HERE / 'pci-peer-policy.json').read_text())
         report = diagnose(normalize_bdf(args.gpu), normalize_bdf(args.nvme),
                           Path('/sys'), Path('/proc'), profile, query=not args.no_nvidia_query)
+        if args.probe_vulkan_rm:
+            report['vulkan_rm_probe'] = probe_vulkan_rm(report, args.probe_vulkan_rm, args.scratch_dir)
+            report['transfer_tested'] = report['vulkan_rm_probe']['transfer_tested']
+        if args.verbose:
+            report['explanations'] = route_explanations(report)
     except (OSError, ValueError) as error:
         parser.exit(2, f'{parser.prog}: {error}\n')
     if args.json:
@@ -378,8 +519,21 @@ def main():
         print('AMD exporter: ' + report['amdgpu_effect'])
         if report['nvidia']['query_error']:
             print('NVIDIA query: ' + report['nvidia']['query_error'])
-        print('Policy prediction only; no GPU allocation, attachment or storage transfer tested.')
+        if 'vulkan_rm_probe' in report:
+            probe = report['vulkan_rm_probe']
+            print('VULKAN FALLBACK ROUTE TEST: ' + probe['status'].upper() + ' (explicitly selected)')
+            print('RAM payload fallback: ' + probe['ram_fallback'].upper())
+            print('Native CUDA export: ' + str(probe.get('native_cuda_export', 'not tested')))
+            print('Route receipts: ' + probe['helper_output'])
+        else:
+            print('Vulkan alternative: NOT TESTED. RAM payload placement: NOT TESTED.')
+            print('Policy prediction only; no GPU allocation, attachment or storage transfer tested.')
+        if args.verbose:
+            for explanation in report['explanations']:
+                print('\n' + explanation)
         print('Use --json for ancestry, ACS, chipset rule and policy source revisions.')
+    if 'vulkan_rm_probe' in report and report['vulkan_rm_probe']['status'] != 'passed':
+        return 1 if report['vulkan_rm_probe']['status'] == 'failed' else 3
     if args.require:
         status = report['linux_p2pdma' if args.require == 'linux' else 'nvidia_dmabuf']['status']
         return {'eligible': 0, 'rejected': 1}.get(status, 3)
