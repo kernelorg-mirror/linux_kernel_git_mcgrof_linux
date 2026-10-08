@@ -390,10 +390,30 @@ def route_explanations(report):
         'export or re-export of an existing arbitrary Torch pointer.',
         'Vulkan/RM is experimental and version guarded. It does not force '
         'topology permission, enable cuFile/GDS, or silently choose host RAM.',
+        'GTT MIGRATION (AMD): in this fallback, the shared buffer object '
+        '(BO) moves from GPU-local VRAM to host TT/GTT: system RAM mapped '
+        'for GPU access. NVMe then reads/writes that host-backed allocation. '
+        'The GPU can access it across PCIe; it is no longer a VRAM-resident '
+        'storage payload, even though the application still uses a GPU '
+        'pointer and a DMA-BUF FD.',
         'A RAM bounce buffer is a separate host staging buffer copied to/from '
         'GPU memory. AMD BO migration changes the backing placement instead; '
         'both can involve host payload RAM. CPU metadata and verification '
         'copies alone are not a payload fallback.',
+        'LATENCY: VRAM-to-GTT migration can add data movement, allocation '
+        'and migration-fence waits at first mapping or remapping. While the '
+        'buffer stays in host RAM, GPU accesses can incur PCIe latency and '
+        'host-memory bandwidth costs. Mapping reuse can amortize setup; '
+        'migration is not necessarily repeated for every I/O. Measure '
+        'first use/remap separately from steady-state transfers and GPU '
+        'gather/scatter; this diagnostic measures no latency.',
+        'CPU TIER BYPASS: disabling LMCache\'s CPU KV-cache tier removes an '
+        'application cache tier, but does not disable driver-managed GTT '
+        'migration or another transport\'s host payload staging. A CPU-tier-off '
+        'configuration can still transfer GPU data through host RAM to NVMe. '
+        'To claim VRAM-to-NVMe with no host payload staging, independently '
+        'verify the actual buffer placement and storage mapping. Report '
+        'CPU tier enabled/disabled and payload placement as separate facts.',
     ])
     probe = report.get('vulkan_rm_probe')
     if probe:

@@ -112,6 +112,26 @@ CPU metadata or independent verification copies do not by themselves imply a
 payload RAM fallback. A Vulkan allocation on AMD uses the AMD exporter policy
 and does not repair peer topology rejected by that driver.
 
+In this AMD fallback the shared buffer object (BO) migrates from GPU-local
+VRAM to system RAM mapped for GPU access (host TT/GTT). NVMe transfers to/from
+that host-backed allocation; subsequent GPU access can cross PCIe. A GPU
+pointer and DMA-BUF FD can remain in use while the payload is in host RAM.
+
+Migration can add data movement, allocation and migration-fence waits on
+first mapping or remapping. GPU access while the buffer remains host-resident
+can incur PCIe latency and host-memory bandwidth costs. Reusing the mapping
+can amortize setup; do not assume a fresh migration or separate bounce copy
+on every I/O. Measure first use/remap, steady-state transfers and GPU
+gather/scatter separately. The policy diagnostic measures no latency.
+
+Disabling LMCache's CPU KV-cache tier removes an application cache tier.
+It does not prohibit driver-managed GTT migration or a transport's host
+payload staging. Therefore CPU-tier-off is insufficient evidence of
+VRAM-to-NVMe with no host payload staging. Report application CPU-tier
+configuration and actual payload placement/mapping independently. GTT
+migration can defeat the host-payload-bypass objective even when there is
+no application CPU-cache lookup or explicit CPU memcpy.
+
 Explicit Vulkan/RM route probe
 ------------------------------
 
