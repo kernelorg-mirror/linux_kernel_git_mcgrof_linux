@@ -4,6 +4,7 @@
  * Copyright (C) 2026 Pavel Begunkov <asml.silence@gmail.com>
  */
 
+#include <linux/dma-fence.h>
 #include <linux/dma-resv.h>
 
 #include "pci-dmabuf.h"
@@ -19,6 +20,31 @@ static const struct dma_buf_attach_ops nvme_dmabuf_importer_ops = {
 	.invalidate_mappings	= nvme_dmabuf_invalidate_mappings,
 	.allow_peer2peer	= true,
 };
+
+static int nvme_dma_buf_wait_migration(struct dma_buf *dmabuf)
+{
+	struct dma_resv_iter cursor;
+	struct dma_fence *fence;
+	long ret;
+
+	dma_resv_assert_held(dmabuf->resv);
+	/*
+	 * Mapping a dynamic attachment may start a new asynchronous move.
+	 * The pre-map wait in dma_buf_io_create_map() cannot cover that move.
+	 * Use the locked iterator: unlike the unlocked reservation wait, it
+	 * also visits signaled fences whose move may have failed.
+	 */
+	dma_resv_for_each_fence(&cursor, dmabuf->resv,
+			      DMA_RESV_USAGE_KERNEL, fence) {
+		ret = dma_fence_wait_timeout(fence, true, MAX_SCHEDULE_TIMEOUT);
+		if (ret <= 0)
+			return ret ?: -EAGAIN;
+		ret = dma_fence_get_status(fence);
+		if (ret < 0)
+			return ret;
+	}
+	return 0;
+}
 
 static struct dma_buf_io_map *nvme_dma_buf_io_map(struct dma_buf_io_ctx *ctx)
 {
@@ -47,6 +73,10 @@ static struct dma_buf_io_map *nvme_dma_buf_io_map(struct dma_buf_io_ctx *ctx)
 		sgt = NULL;
 		goto err;
 	}
+
+	ret = nvme_dma_buf_wait_migration(ctx->dmabuf);
+	if (ret)
+		goto err;
 
 	for_each_sgtable_dma_sg(sgt, sg, tmp) {
 		dma_addr_t dma_addr = sg_dma_address(sg);
