@@ -2198,6 +2198,9 @@ xfs_file_init_dma_buf_io_ctx(
 {
 	struct xfs_inode	*ip = XFS_I(file_inode(file));
 
+	/* zoned writes are out-of-place zone appends, not mapped overwrites */
+	if (xfs_is_zoned_inode(ip))
+		return -EOPNOTSUPP;
 	return iomap_file_init_dma_buf_io_ctx(file,
 			xfs_inode_buftarg(ip)->bt_bdev, ctx);
 }
