@@ -42,6 +42,7 @@ TARGETS += filesystems/statmount
 TARGETS += filesystems/mount-notify
 TARGETS += filesystems/nsfs
 TARGETS += filesystems/fuse
+TARGETS += filesystems/nfs
 TARGETS += filesystems/move_mount
 TARGETS += filesystems/empty_mntns
 TARGETS += filesystems/fsmount_ns
