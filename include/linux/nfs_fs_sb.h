@@ -258,6 +258,7 @@ struct nfs_server {
 #endif
 	atomic64_t		owner_ctr;
 	struct list_head	state_owners_lru;
+	unsigned long		state_owners_gc_time;	/* jiffies of last LRU scan */
 	struct list_head	layouts;
 	struct list_head	delegations;
 	spinlock_t		delegations_lock;

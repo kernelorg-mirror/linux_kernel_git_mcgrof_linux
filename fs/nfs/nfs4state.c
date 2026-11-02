@@ -553,6 +553,19 @@ static void nfs4_gc_state_owners(struct nfs_server *server)
 	unsigned long time_min, time_max;
 	LIST_HEAD(doomed);
 
+	/*
+	 * This runs on every open, but an owner is reaped only after a whole
+	 * lease idle on the LRU.  Skip the scan, and cl_lock, while the LRU
+	 * is empty, as it is when owners stay in use, and otherwise scan at
+	 * most once a second.  Both checks race with updates; that only
+	 * delays reaping until a later open.
+	 */
+	if (list_empty_careful(&server->state_owners_lru))
+		return;
+	if (time_before(jiffies, READ_ONCE(server->state_owners_gc_time) + HZ))
+		return;
+	WRITE_ONCE(server->state_owners_gc_time, jiffies);
+
 	spin_lock(&clp->cl_lock);
 	time_max = jiffies;
 	time_min = (long)time_max - (long)clp->cl_lease_time;
