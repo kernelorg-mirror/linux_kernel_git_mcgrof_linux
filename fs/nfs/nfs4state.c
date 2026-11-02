@@ -371,6 +371,46 @@ nfs4_get_state_owner_active_locked(struct nfs4_state_owner *sp)
 	return true;
 }
 
+static int nfs4_state_owner_cmp_cred(const void *key, const struct rb_node *node)
+{
+	const struct nfs4_state_owner *sp =
+		rb_entry(node, struct nfs4_state_owner, so_server_node);
+
+	return cred_fscmp(key, sp->so_cred);
+}
+
+/*
+ * Find a state owner that is already in use without taking cl_lock.
+ *
+ * Opens by one credential share one state owner, so concurrent opens
+ * through a mount would otherwise all serialize on the client-wide
+ * cl_lock just to find it.  A lockless descent of the rbtree can miss an
+ * entry while the tree is being rebalanced, but an entry it returns is
+ * the right one (see the notes in lib/rbtree.c), and owners are freed
+ * only after an RCU grace period.  Only an owner with a nonzero so_count
+ * is taken: reviving an idle one moves it off the LRU and pins the
+ * superblock, which needs the lock.  A miss falls back to the locked
+ * lookup.
+ */
+static struct nfs4_state_owner *
+nfs4_find_active_state_owner_rcu(struct nfs_server *server,
+				 const struct cred *cred)
+{
+	struct nfs4_state_owner *sp = NULL;
+	struct rb_node *node;
+
+	rcu_read_lock();
+	node = rb_find_rcu(cred, &server->state_owners,
+			   nfs4_state_owner_cmp_cred);
+	if (node) {
+		sp = rb_entry(node, struct nfs4_state_owner, so_server_node);
+		if (!atomic_inc_not_zero(&sp->so_count))
+			sp = NULL;
+	}
+	rcu_read_unlock();
+	return sp;
+}
+
 static struct nfs4_state_owner *
 nfs4_find_state_owner_locked(struct nfs_server *server, const struct cred *cred)
 {
@@ -421,7 +461,7 @@ nfs4_insert_state_owner_locked(struct nfs4_state_owner *new)
 			return sp;
 		}
 	}
-	rb_link_node(&new->so_server_node, parent, p);
+	rb_link_node_rcu(&new->so_server_node, parent, p);
 	rb_insert_color(&new->so_server_node, &server->state_owners);
 	return new;
 }
@@ -501,8 +541,9 @@ nfs4_reset_state_owner(struct nfs4_state_owner *sp)
 static void nfs4_free_state_owner(struct nfs4_state_owner *sp)
 {
 	nfs4_destroy_seqid_counter(&sp->so_seqid);
+	/* Lockless lookups may still be comparing so_cred; creds are RCU freed. */
 	put_cred(sp->so_cred);
-	kfree(sp);
+	kfree_rcu(sp, so_rcu);
 }
 
 static void nfs4_gc_state_owners(struct nfs_server *server)
@@ -545,6 +586,9 @@ struct nfs4_state_owner *nfs4_get_state_owner(struct nfs_server *server,
 	struct nfs_client *clp = server->nfs_client;
 	struct nfs4_state_owner *sp, *new;
 
+	sp = nfs4_find_active_state_owner_rcu(server, cred);
+	if (sp != NULL)
+		goto out;
 	spin_lock(&clp->cl_lock);
 	sp = nfs4_find_state_owner_locked(server, cred);
 	spin_unlock(&clp->cl_lock);

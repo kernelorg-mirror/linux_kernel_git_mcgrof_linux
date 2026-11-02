@@ -250,7 +250,10 @@ struct nfs_server {
 	struct pnfs_layoutdriver_type  *pnfs_curr_ld; /* Active layout driver */
 	struct rpc_wait_queue	roc_rpcwaitq;
 
-	/* the following fields are protected by nfs_client->cl_lock */
+	/*
+	 * The following fields are protected by nfs_client->cl_lock.
+	 * state_owners may also be searched under rcu_read_lock().
+	 */
 	struct rb_root		state_owners;
 #endif
 	atomic64_t		owner_ctr;

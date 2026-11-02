@@ -126,6 +126,7 @@ struct nfs4_state_owner {
 	struct list_head     so_states;
 	struct nfs_seqid_counter so_seqid;
 	struct mutex	     so_delegreturn_mutex;
+	struct rcu_head	     so_rcu;
 };
 
 enum {
