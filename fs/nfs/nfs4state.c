@@ -701,6 +701,7 @@ nfs4_alloc_open_state(void)
 	refcount_set(&state->count, 1);
 	INIT_LIST_HEAD(&state->lock_states);
 	spin_lock_init(&state->state_lock);
+	spin_lock_init(&state->open_lock);
 	seqlock_init(&state->seqlock);
 	init_waitqueue_head(&state->waitq);
 	return state;
@@ -708,17 +709,25 @@ nfs4_alloc_open_state(void)
 
 void
 nfs4_state_set_mode_locked(struct nfs4_state *state, fmode_t fmode)
+	__must_hold(&state->open_lock)
 {
+	struct nfs4_state_owner *owner = state->owner;
+
+	lockdep_assert_held(&state->open_lock);
 	if (state->state == fmode)
 		return;
 	/* NB! List reordering - see the reclaim code for why.  */
 	if ((fmode & FMODE_WRITE) != (state->state & FMODE_WRITE)) {
+		spin_lock(&owner->so_lock);
 		if (fmode & FMODE_WRITE)
-			list_move(&state->open_states, &state->owner->so_states);
+			list_move(&state->open_states, &owner->so_states);
 		else
-			list_move_tail(&state->open_states, &state->owner->so_states);
+			list_move_tail(&state->open_states, &owner->so_states);
+		WRITE_ONCE(state->state, fmode);
+		spin_unlock(&owner->so_lock);
+		return;
 	}
-	state->state = fmode;
+	WRITE_ONCE(state->state, fmode);
 }
 
 static struct nfs4_state *
@@ -811,7 +820,7 @@ static void __nfs4_close(struct nfs4_state *state,
 
 	atomic_inc(&owner->so_count);
 	/* Protect against nfs4_find_state() */
-	spin_lock(&owner->so_lock);
+	spin_lock(&state->open_lock);
 	switch (fmode & (FMODE_READ | FMODE_WRITE)) {
 		case FMODE_READ:
 			state->n_rdonly--;
@@ -838,7 +847,7 @@ static void __nfs4_close(struct nfs4_state *state,
 			clear_bit(NFS_DELEGATED_STATE, &state->flags);
 	}
 	nfs4_state_set_mode_locked(state, newstate);
-	spin_unlock(&owner->so_lock);
+	spin_unlock(&state->open_lock);
 
 	if (!call_close) {
 		nfs4_put_open_state(state);
@@ -1672,7 +1681,7 @@ restart:
 			continue;
 		if (!nfs4_valid_open_stateid(state))
 			continue;
-		if (state->state == 0)
+		if (READ_ONCE(state->state) == 0)
 			continue;
 #ifdef CONFIG_NFS_V4_2
 		if (test_bit(NFS_SRV_SSC_COPY_STATE, &state->flags)) {

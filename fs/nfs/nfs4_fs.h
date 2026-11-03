@@ -192,12 +192,18 @@ struct nfs4_state {
 
 	unsigned long flags;		/* Do we hold any locks? */
 	spinlock_t state_lock;		/* Protects the lock_states list */
+	spinlock_t open_lock;		/* Protects the open counts below */
 
 	seqlock_t seqlock;		/* Protects the stateid/open_stateid */
 	nfs4_stateid stateid;		/* Current stateid: may be delegation */
 	nfs4_stateid open_stateid;	/* OPEN stateid */
 
-	/* The following 3 fields are protected by owner->so_lock */
+	/*
+	 * The following 4 fields are protected by open_lock.  A change to
+	 * the FMODE_WRITE bit of state also moves this state within
+	 * owner->so_states, so it is made under owner->so_lock as well; a
+	 * walker of that list under so_lock reads state with READ_ONCE().
+	 */
 	unsigned int n_rdonly;		/* Number of read-only references */
 	unsigned int n_wronly;		/* Number of write-only references */
 	unsigned int n_rdwr;		/* Number of read/write references */

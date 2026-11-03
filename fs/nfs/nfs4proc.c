@@ -1715,7 +1715,7 @@ static void nfs_clear_open_stateid(struct nfs4_state *state,
 
 static void nfs_set_open_stateid_locked(struct nfs4_state *state,
 		const nfs4_stateid *stateid, nfs4_stateid *freeme)
-	__must_hold(&state->owner->so_lock)
+	__must_hold(&state->open_lock)
 	__must_hold(&state->seqlock)
 	__must_hold(RCU)
 
@@ -1750,7 +1750,7 @@ static void nfs_set_open_stateid_locked(struct nfs4_state *state,
 		 * update of the stateid until we are in sequence.
 		 */
 		write_sequnlock(&state->seqlock);
-		spin_unlock(&state->owner->so_lock);
+		spin_unlock(&state->open_lock);
 		rcu_read_unlock();
 		trace_nfs4_open_stateid_update_wait(state->inode, stateid, 0);
 
@@ -1764,7 +1764,7 @@ static void nfs_set_open_stateid_locked(struct nfs4_state *state,
 			status = -EINTR;
 		finish_wait(&state->waitq, &wait);
 		rcu_read_lock();
-		spin_lock(&state->owner->so_lock);
+		spin_lock(&state->open_lock);
 		write_seqlock(&state->seqlock);
 	}
 
@@ -1849,7 +1849,7 @@ int update_open_stateid(struct nfs4_state *state,
 
 	fmode &= (FMODE_READ|FMODE_WRITE);
 
-	spin_lock(&state->owner->so_lock);
+	spin_lock(&state->open_lock);
 	if (open_stateid != NULL) {
 		rcu_read_lock();
 		nfs_state_set_open_stateid(state, open_stateid, fmode, &freeme);
@@ -1881,7 +1881,7 @@ no_delegation_unlock:
 no_delegation:
 	if (ret)
 		update_open_stateflags(state, fmode);
-	spin_unlock(&state->owner->so_lock);
+	spin_unlock(&state->open_lock);
 
 	if (test_bit(NFS_STATE_RECLAIM_NOGRACE, &state->flags))
 		nfs4_schedule_state_manager(clp);
@@ -1933,13 +1933,13 @@ static struct nfs4_state *nfs4_try_open_cached(struct nfs4_opendata *opendata)
 	int ret = -EAGAIN;
 
 	for (;;) {
-		spin_lock(&state->owner->so_lock);
+		spin_lock(&state->open_lock);
 		if (can_open_cached(state, fmode, open_mode, claim)) {
 			update_open_stateflags(state, fmode);
-			spin_unlock(&state->owner->so_lock);
+			spin_unlock(&state->open_lock);
 			goto out_return_state;
 		}
-		spin_unlock(&state->owner->so_lock);
+		spin_unlock(&state->open_lock);
 
 		if (!can_open_delegated(state->inode, fmode, claim, &stateid))
 			break;
@@ -3669,7 +3669,7 @@ static void nfs4_close_prepare(struct rpc_task *task, void *data)
 		goto out_wait;
 
 	task->tk_msg.rpc_proc = &nfs4_procedures[NFSPROC4_CLNT_OPEN_DOWNGRADE];
-	spin_lock(&state->owner->so_lock);
+	spin_lock(&state->open_lock);
 	is_rdwr = test_bit(NFS_O_RDWR_STATE, &state->flags);
 	is_rdonly = test_bit(NFS_O_RDONLY_STATE, &state->flags);
 	is_wronly = test_bit(NFS_O_WRONLY_STATE, &state->flags);
@@ -3692,7 +3692,7 @@ static void nfs4_close_prepare(struct rpc_task *task, void *data)
 	nfs4_sync_open_stateid(&calldata->arg.stateid, state);
 	if (!nfs4_valid_open_stateid(state))
 		call_close = 0;
-	spin_unlock(&state->owner->so_lock);
+	spin_unlock(&state->open_lock);
 
 	if (!call_close) {
 		/* Note: exit _without_ calling nfs4_close_done */
