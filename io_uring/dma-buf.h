@@ -4,12 +4,14 @@
 
 #include <linux/dma-buf-io.h>
 #include <linux/io_uring_types.h>
+#include <linux/workqueue.h>
 
 #include "rsrc.h"
 
 struct io_buf_dma {
 	struct dma_buf_io_ctx		*ctx;
 	struct file			*target_file;
+	struct work_struct		release_work;
 };
 
 int __io_register_dmabuf(struct io_ring_ctx *ctx,
