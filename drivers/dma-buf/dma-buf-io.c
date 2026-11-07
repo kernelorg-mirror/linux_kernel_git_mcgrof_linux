@@ -6,6 +6,7 @@
  */
 #include <linux/dma-buf-io.h>
 #include <linux/dma-resv.h>
+#include <linux/wait_bit.h>
 
 static void dma_buf_io_map_release(struct dma_buf_io_map *map)
 {
@@ -21,7 +22,8 @@ static void dma_buf_io_map_refs_cb(struct percpu_ref *ref)
 {
 	struct dma_buf_io_map *map = container_of(ref, struct dma_buf_io_map, refs);
 
-	complete(&map->drained);
+	/* Context shutdown and an invalidation may both be waiting. */
+	complete_all(&map->drained);
 }
 
 static void dma_buf_io_kill_map(struct dma_buf_io_ctx *ctx)
@@ -29,6 +31,14 @@ static void dma_buf_io_kill_map(struct dma_buf_io_ctx *ctx)
 	struct dma_buf_io_map *map;
 
 	dma_resv_assert_held(ctx->dmabuf->resv);
+
+	/*
+	 * Context shutdown may have unpublished a map and dropped the lock
+	 * to wait for it. Make sure no I/O still uses it before the exporter
+	 * moves the buffer. The shutdown path releases it.
+	 */
+	if (ctx->dying_map)
+		wait_for_completion(&ctx->dying_map->drained);
 
 	map = rcu_dereference_protected(ctx->map,
 				dma_resv_held(ctx->dmabuf->resv));
@@ -138,10 +148,43 @@ struct dma_buf_io_map *dma_buf_io_create_map(struct dma_buf_io_ctx *ctx)
 
 static void dma_buf_io_ctx_shutdown(struct dma_buf_io_ctx *ctx)
 {
-	dma_resv_lock(ctx->dmabuf->resv, NULL);
+	struct dma_resv *resv = ctx->dmabuf->resv;
+	struct dma_buf_io_map *map;
+
+	dma_resv_lock(resv, NULL);
 	ctx->is_dead = true;
-	dma_buf_io_kill_map(ctx);
-	dma_resv_unlock(ctx->dmabuf->resv);
+	map = rcu_dereference_protected(ctx->map, dma_resv_held(resv));
+	if (map) {
+		rcu_assign_pointer(ctx->map, NULL);
+		percpu_ref_kill(&map->refs);
+		ctx->dying_map = map;
+	}
+	dma_resv_unlock(resv);
+	if (!map) {
+		/*
+		 * Another shutdown, such as a release racing with device
+		 * removal, may still be draining the map. Do not return
+		 * before it has been unmapped.
+		 */
+		wait_var_event(&ctx->dying_map, !READ_ONCE(ctx->dying_map));
+		return;
+	}
+
+	/*
+	 * The reference drains only after an RCU grace period. Wait for it
+	 * without the reservation lock, so the exporter is not blocked from
+	 * unmapping or freeing the buffer meanwhile. The context is dead, so
+	 * no new map can be created, and an invalidation that comes in
+	 * between waits for this map in dma_buf_io_kill_map().
+	 */
+	synchronize_rcu_expedited();
+	wait_for_completion(&map->drained);
+
+	dma_resv_lock(resv, NULL);
+	dma_buf_io_map_release(map);
+	WRITE_ONCE(ctx->dying_map, NULL);
+	dma_resv_unlock(resv);
+	wake_up_var(&ctx->dying_map);
 }
 
 /*

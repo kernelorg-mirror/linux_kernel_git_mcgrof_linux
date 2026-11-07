@@ -44,6 +44,11 @@ struct dma_buf_io_map {
 
 struct dma_buf_io_ctx {
 	struct dma_buf_io_map __rcu		*map;
+	/*
+	 * A map that context shutdown has unpublished and is waiting to
+	 * drain without the reservation lock. Protected by that lock.
+	 */
+	struct dma_buf_io_map			*dying_map;
 	struct dma_buf				*dmabuf;
 	enum dma_data_direction			dir;
 	bool					is_dead;
