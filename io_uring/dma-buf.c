@@ -1,12 +1,30 @@
 #include "dma-buf.h"
 
-static inline void io_release_dmabuf(void *priv)
+static void io_release_dmabuf_work(struct work_struct *work)
+{
+	struct io_buf_dma *bd = container_of(work, struct io_buf_dma,
+					     release_work);
+
+	dma_buf_io_ctx_release(bd->ctx);
+	fput(bd->target_file);
+	kfree(bd);
+}
+
+/*
+ * Releasing the context waits for its map's percpu reference to drain,
+ * which takes a full RCU grace period even when no I/O is in flight, as
+ * the reference only reaches zero once it has switched to atomic mode.
+ * Do it from a workqueue so that unregistering a buffer, or freeing the
+ * last ring that holds it, does not stall the caller for that long. The
+ * context holds its own dma-buf reference, and the target file is put
+ * only after the context is gone, so both stay valid until the work runs.
+ */
+static void io_release_dmabuf(void *priv)
 {
 	struct io_buf_dma *bd = priv;
 
-	fput(bd->target_file);
-	dma_buf_io_ctx_release(bd->ctx);
-	kfree(bd);
+	INIT_WORK(&bd->release_work, io_release_dmabuf_work);
+	queue_work(system_dfl_wq, &bd->release_work);
 }
 
 int __io_register_dmabuf(struct io_ring_ctx *ctx,
